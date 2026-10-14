@@ -159,10 +159,10 @@ export class MonocularHandTracker implements HandTrackerBackend {
       const pose = solvePose(model, image, k, { refineRotation: this.refineRotation });
       const joints = transformPoints(model, pose);
 
-      // MediaPipe labels handedness as if the image were mirrored (selfie view).
+      // MediaPipe's label is correct for unmirrored camera frames (verified in the demo).
       const category = result.handedness[h]?.[0];
       let handedness: Handedness = category?.categoryName === 'Left' ? 'Left' : 'Right';
-      if (!this.options.mirroredInput) handedness = handedness === 'Left' ? 'Right' : 'Left';
+      if (this.options.mirroredInput) handedness = handedness === 'Left' ? 'Right' : 'Left';
 
       if (this.options.smoothing !== false && !seen.has(handedness)) {
         let filter = this.filters.get(handedness);

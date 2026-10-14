@@ -67,8 +67,9 @@ backends without changes. `debug` is backend-specific.
   and world landmarks use the same axis directions. three.js uses (x, −y, −z).
 - **Images are not mirrored** when passed to MediaPipe. The demo mirrors the
   display with CSS only.
-- **Handedness**: MediaPipe labels hands as if the image were mirrored, so the
-  monocular backend swaps the label unless `mirroredInput: true`.
+- **Handedness**: for unmirrored frames, MediaPipe's label is the user's
+  actual hand (verified in the demo). The monocular backend swaps it only when
+  `mirroredInput: true`.
 - **Intrinsics**: square pixels, principal point at image centre, no distortion.
   Focal length is stored as `fx / width` per camera (`localStorage`, key
   `webhands:calibration:<deviceId>`), so it survives resolution changes that
@@ -137,8 +138,6 @@ Lateral position error scales with focal error; depth error scales with both.
   reprojection error with `refineRotation: false` is consistently high while
   `true` lowers it a lot, rotation refinement should become the default. Watch
   for depth jitter when it is on (near-planar hand → PnP ambiguity).
-- Handedness swap direction for unmirrored input (check in the demo with a
-  known hand).
 - Accuracy targets: tape-measure test at 40 / 60 / 100 cm; goal ±10 % depth
   after calibration.
 - Whether world-landmark z (finger depth relative to the hand) is good enough

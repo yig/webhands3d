@@ -37,3 +37,23 @@ export function median(values: number[]): number {
   const mid = sorted.length >> 1;
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
+
+/** Value at fraction q ∈ [0, 1] of the sorted values (nearest rank). */
+export function percentile(values: number[], q: number): number {
+  if (!values.length) return NaN;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.min(sorted.length - 1, Math.max(0, Math.round(q * (sorted.length - 1))))];
+}
+
+/** Weighted median: the value where cumulative weight reaches half the total. */
+export function weightedMedian(values: number[], weights: number[]): number {
+  if (!values.length) return NaN;
+  const order = values.map((_, i) => i).sort((a, b) => values[a] - values[b]);
+  const half = weights.reduce((s, w) => s + w, 0) / 2;
+  let acc = 0;
+  for (const i of order) {
+    acc += weights[i];
+    if (acc >= half) return values[i];
+  }
+  return values[order[order.length - 1]];
+}

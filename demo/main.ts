@@ -6,6 +6,8 @@ import {
   KNOWN_RECTANGLES,
   MonocularHandTracker,
   NUM_JOINTS,
+  calibrateHandsBoneLengths,
+  collectHands,
   collectSamples,
   focalFromDistance,
   fovFromIntrinsics,
@@ -18,7 +20,9 @@ import {
   openCamera,
   projectPoints,
   saveCalibration,
+  type StoredCalibration,
   type CameraHandle,
+  type DepthMethod,
   type Hand3D,
   type Handedness,
 } from '../src';
@@ -31,6 +35,7 @@ const readout = $<HTMLDivElement>('readout');
 const cameraSelect = $<HTMLSelectElement>('camera');
 const fovInput = $<HTMLInputElement>('fov');
 const refineInput = $<HTMLInputElement>('refine');
+const depthMethodInput = $<HTMLSelectElement>('depthMethod');
 
 const tracker = new MonocularHandTracker({ video });
 let camera: CameraHandle | null = null;
@@ -170,14 +175,27 @@ function updateReadout(hands: Hand3D[]) {
   for (const h of hands) {
     const c = h.debug?.center;
     const wrist = h.joints;
+    const w = h.debug?.worldLandmarks;
     lines.push(
-      `${h.handedness.padEnd(5)} conf ${h.confidence.toFixed(2)}`,
+      `${h.handedness.padEnd(5)} conf ${h.confidence.toFixed(2)}   bones ${tracker.boneLengths[h.handedness] ? 'calibrated' : 'MediaPipe'}`,
       c ? `  centre  x ${cm(c[0])} y ${cm(c[1])} z ${cm(c[2])}` : '',
       `  wrist   x ${cm(wrist[0])} y ${cm(wrist[1])} z ${cm(wrist[2])}`,
       `  reproj  ${h.debug?.reprojectionError?.toFixed(1) ?? '?'} px`,
+      // Diagnostic for depth drift: MediaPipe's own (unscaled) palm size. If it
+      // changes with pose while the hand doesn't, uncalibrated depth drifts.
+      w ? `  MP palm ${(palmSize(w) * 1000).toFixed(1)} mm` : '',
     );
   }
+  const left = hands.find((h) => h.handedness === 'Left');
+  const right = hands.find((h) => h.handedness === 'Right');
+  if (left && right) lines.push(`wrist z, left − right: ${cm(left.joints[2] - right.joints[2])}`);
   readout.textContent = lines.join('\n');
+}
+/** Mean of the wrist–index MCP, wrist–pinky MCP and index–pinky MCP distances. */
+function palmSize(w: ArrayLike<number>) {
+  const d = (a: number, b: number) =>
+    Math.hypot(w[a * 3] - w[b * 3], w[a * 3 + 1] - w[b * 3 + 1], w[a * 3 + 2] - w[b * 3 + 2]);
+  return (d(0, 5) + d(0, 17) + d(5, 17)) / 3;
 }
 const cm = (m: number) => (m * 100).toFixed(1).padStart(6) + 'cm';
 
@@ -196,6 +214,7 @@ async function startCamera(deviceId?: string) {
   status.textContent = 'Loading MediaPipe…';
   await tracker.start();
   status.textContent = camera.label;
+  updateBonesState();
   fovInput.value = fovFromIntrinsics(tracker.intrinsics!).toFixed(1);
   updateFrustum();
   await populateCameras(camera.cameraId);
@@ -208,7 +227,7 @@ async function populateCameras(selected: string) {
   );
 }
 
-function persist(patch: { focalOverWidth?: number; handScale?: number }) {
+function persist(patch: Partial<StoredCalibration>) {
   const id = tracker.cameraId;
   saveCalibration(id, { ...loadCalibration(id), ...patch });
 }
@@ -224,6 +243,9 @@ $('mirror').addEventListener('change', (e) =>
 );
 $('videoWrap').classList.add('mirror');
 refineInput.addEventListener('change', () => (tracker.refineRotation = refineInput.checked));
+depthMethodInput.addEventListener('change', () => {
+  tracker.depthMethod = depthMethodInput.value as DepthMethod;
+});
 
 fovInput.addEventListener('change', () => {
   const k = tracker.intrinsics;
@@ -278,8 +300,17 @@ $('calScale').addEventListener('click', () =>
       ? handScaleFromGrip(known.length, samples)
       : handScaleFromLength(parseFloat($<HTMLInputElement>('handLength').value) / 100, samples);
     if (!Number.isFinite(scale)) throw new Error('Calibration failed');
+    // Bone lengths carry the overall size too; rescale them to match.
+    const ratio = scale / tracker.handScale;
+    const stored: StoredCalibration['boneLengths'] = {};
+    for (const side of ['Left', 'Right'] as const) {
+      const lengths = tracker.boneLengths[side];
+      if (!lengths) continue;
+      tracker.boneLengths[side] = Array.from(lengths, (l) => l * ratio);
+      stored[side] = Array.from(tracker.boneLengths[side]!);
+    }
     tracker.handScale = scale;
-    persist({ handScale: scale });
+    persist({ handScale: scale, boneLengths: stored });
     return `Hand scale ${scale.toFixed(3)} from ${samples.length} frames`;
   }),
 );
@@ -396,11 +427,46 @@ overlay.addEventListener('click', (e) => {
   status.textContent = `Focal ${median.toFixed(0)} px (FOV ${fovInput.value}°). Add more views to average.`;
 });
 
+// --- Step 3: bone lengths ---
+function updateBonesState() {
+  const sides = (['Left', 'Right'] as const).filter((s) => tracker.boneLengths[s]);
+  $('bonesState').textContent = sides.length ? `Calibrated: ${sides.join(', ')}` : 'Not calibrated';
+}
+
+$('calBones').addEventListener('click', async () => {
+  const button = $<HTMLButtonElement>('calBones');
+  const k = tracker.intrinsics;
+  if (!k) return;
+  button.disabled = true;
+  status.textContent = 'Turn both hands slowly in every direction…';
+  try {
+    const samples = await collectHands((l) => tracker.onFrame(l), 8000);
+    const result = calibrateHandsBoneLengths(samples, k, tracker.handScale);
+    const sides = (['Left', 'Right'] as const).filter((s) => result[s]);
+    if (!sides.length) throw new Error('Not enough frames of either hand; try again');
+    const stored: StoredCalibration['boneLengths'] = { ...loadCalibration(tracker.cameraId).boneLengths };
+    for (const side of sides) {
+      tracker.boneLengths[side] = result[side]!;
+      stored[side] = Array.from(result[side]!);
+    }
+    persist({ boneLengths: stored });
+    const mm = sides.map((s) => `${s} ${(result[s]!.reduce((a, b) => a + b, 0) * 1000).toFixed(0)} mm`);
+    status.textContent = `Bone lengths calibrated (total: ${mm.join(', ')})`;
+  } catch (e) {
+    status.textContent = String(e instanceof Error ? e.message : e);
+  } finally {
+    button.disabled = false;
+    updateBonesState();
+  }
+});
+
 $('calReset').addEventListener('click', () => {
   const k = tracker.intrinsics;
   if (!k) return;
   saveCalibration(tracker.cameraId, {});
   tracker.handScale = 1;
+  tracker.boneLengths = {};
+  updateBonesState();
   tracker.intrinsics = intrinsicsFromFov(k.width, k.height);
   fovInput.value = fovFromIntrinsics(tracker.intrinsics).toFixed(1);
   focalViews = [];

@@ -29,12 +29,14 @@ src/
   camera.ts                listCameras, openCamera, onVideoFrame (rVFC with rAF fallback)
   geometry/solvePose.ts    linear translation + Levenberg–Marquardt PnP, projection helpers
   filter/oneEuro.ts        One Euro filter over a vector
-  geometry/numeric.ts      dense linear solve, median
+  geometry/numeric.ts      dense linear solve, median, percentile, weighted median
+  geometry/bones.ts        skeleton tree, retarget to fixed bone lengths, depth from flattest bones
   calibration/index.ts     hand-scale and focal-length calibration from hand samples
   calibration/objects.ts   known-size everyday objects; grip scale; focal from a clicked rectangle
+  calibration/bones.ts     per-hand bone-length calibration (longest appearance = true length)
   backends/monocular.ts    MonocularHandTracker (MediaPipe + solvePose + smoothing)
 demo/                      Vite dev page: video + 2D overlay, three.js 3D view, calibration UI
-test/                      vitest unit tests (synthetic PnP, rectangle focal calibration)
+test/                      vitest unit tests (synthetic PnP, rectangle focal, bone lengths vs. drift)
 ```
 
 Dependencies: `@mediapipe/tasks-vision` (runtime; WASM and model fetched from
@@ -82,13 +84,19 @@ forced strictly increasing for MediaPipe):
 
 1. `HandLandmarker.detectForVideo` (VIDEO mode, GPU delegate, up to 2 hands) →
    per hand: image landmarks (normalised → pixels) and world landmarks W (m).
-2. Model P = s · W, where s is the per-user hand scale.
-3. `solvePose(P, uv, K)`:
-   - **Linear init** with R = I: each joint gives
-     `tx − x̂·tz = x̂·Pz − Px`, `ty − ŷ·tz = ŷ·Pz − Py` (x̂, ŷ normalised image
-     coordinates) → 3×3 normal equations.
-   - **Levenberg–Marquardt** on pixel reprojection error over t, plus a
-     left-multiplied rotation update ω if `refineRotation` is on.
+2. Model P: if this hand's bone lengths are calibrated, `retarget(W, L)` keeps
+   MediaPipe's bone directions but sets each bone to its calibrated length;
+   otherwise P = s · W (s = hand scale).
+3. Place the hand (`depthMethod`):
+   - **`'pnp'`** — `solvePose(P, uv, K)`: linear init with R = I (each joint gives
+     `tx − x̂·tz = x̂·Pz − Px`, `ty − ŷ·tz = ŷ·Pz − Py`) → Levenberg–Marquardt on
+     pixel reprojection error over t, plus a rotation update if `refineRotation`.
+   - **`'bones'`** — `translationFromBones(P, uv, K)`: each bone gives a depth
+     L·cos(tilt)/a (a = normalised image length, tilt from MediaPipe's bone
+     direction). Weighted median, weights 1/((tan(tilt)·σθ)² + (σpx/a_px)²), so
+     bones flat to the camera dominate (tilt errors are second-order there).
+     Capped by the bound depth ≤ L/a (a bone can only look shorter). x, y by
+     least squares given depth.
 4. Joints = R · P + t; One Euro filter per handedness (default
    `minCutoff 1.5, beta 5`); filters reset when a hand disappears.
 
@@ -116,6 +124,19 @@ are two steps. Each offers everyday objects of known size so no ruler is needed
    - *Or* hold the hand (after step 1) centred at a measured distance;
      f' = f · measured / median(estimated z).
 
+3. **Bone lengths L (per hand)** — fixes depth drift. MediaPipe re-estimates
+   each hand's size every frame and the estimate changes with pose, so depth
+   (≈ f · size / pixel size) drifts with pose, and differently for the two
+   hands. True bone lengths are constant and foreshortening only shortens, so
+   while the user turns their hands for ~8 s, alternate:
+   - per frame: depth from the current L (`translationFromBones`);
+   - per bone: L = 90th percentile over frames of (bone depth × normalised image
+     length). Not the max: 2D noise only adds length.
+   Depth and L share one overall scale, set to `handScale` × MediaPipe's median
+   hand size averaged over both hands — i.e. **left and right hands are assumed
+   the same size**, so their distances agree. Recalibrating hand size (step 1)
+   rescales stored bone lengths.
+
 **Object size matters for the rectangle method** (simulated, 1.5 px uniform
 click noise, single view, median / 90th-percentile focal error):
 
@@ -129,10 +150,33 @@ click noise, single view, median / 90th-percentile focal error):
 So the demo defaults to paper, asks for a ~45° tilt, rejects near-frontal views,
 and recommends several views. Lower-quality fallback: type in a FOV.
 
+**Drift simulation** (`test/bones.test.ts` setup: random poses 45–80 cm,
+MediaPipe size error ±15 % per frame, joint noise 2 mm xy / 6 mm z, 1.5 px 2D
+noise; wrist depth RMS error, and correlation with the size error):
+
+| MediaPipe relative depth | PnP, MediaPipe size | PnP, calibrated L | Bones, calibrated L |
+|---|---|---|---|
+| accurate (z × 1) | 9.0 % (corr 0.99) | **2.7 %** (corr 0.17) | 4.6 % (corr 0.03) |
+| flattened (z × 0.7) | 9.2 % | 5.9 % | **5.7 %** |
+| flattened (z × 0.5) | 9.6 % | 10.4 % | **6.8 %** |
+
+Calibrated bone lengths remove the size-driven drift either way. Which
+placement method is better depends on how faithful MediaPipe's relative depths
+are, which is unknown, so both are offered (`depthMethod`, demo dropdown).
+Bone-length calibration itself recovers lengths to ~2 % RMS in the same
+simulation.
+
 Without calibration: s = 1 (MediaPipe's average hand) and a 60° horizontal FOV.
 Lateral position error scales with focal error; depth error scales with both.
 
 ## Open questions / to verify empirically
+
+- Does bone-length calibration remove the observed left/right depth drift on
+  real hands, and which `depthMethod` is better? Demo readout shows MediaPipe's
+  raw palm size per hand (confirms the cause if it varies with pose) and the
+  left − right wrist depth.
+- Are left and right hands really equal in size for the shared scale? If not,
+  hands will have a constant (non-drifting) depth offset.
 
 - Are MediaPipe world landmarks really camera-aligned in rotation? If the
   reprojection error with `refineRotation: false` is consistently high while
@@ -152,6 +196,7 @@ Lateral position error scales with focal error; depth error scales with both.
 ## Roadmap
 
 1. ✅ Monocular backend, calibration with everyday objects, demo.
+1b. ✅ Bone-length calibration and bone-based depth (pose-dependent drift).
 2. Stereo in one tab (two `getUserMedia`, capture-time pairing, hand-keypoint
    self-calibration, triangulation; fall back to monocular per view on occlusion).
 3. Two-device mode over WebRTC.

@@ -192,13 +192,24 @@ export function rodrigues(wx: number, wy: number, wz: number): Float64Array {
   );
 }
 
+/** RMS pixel distance between `model` placed by `pose` and `image`. */
+export function reprojectionError(
+  model: ArrayLike<number>,
+  image: ArrayLike<number>,
+  k: Intrinsics,
+  pose: Pick<Pose, 'rotation' | 'translation'>,
+): number {
+  const n = Math.min(model.length / 3, image.length / 2);
+  return Math.sqrt(reprojectionCost(model, image, k, n, pose.rotation, pose.translation) / Math.max(n, 1));
+}
+
 function reprojectionCost(
   model: ArrayLike<number>,
   image: ArrayLike<number>,
   k: Intrinsics,
   n: number,
-  R: Float64Array,
-  t: Float64Array,
+  R: ArrayLike<number>,
+  t: ArrayLike<number>,
 ): number {
   const a = new Float64Array(3);
   let cost = 0;

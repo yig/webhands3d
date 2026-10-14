@@ -41,6 +41,8 @@ export interface StoredCalibration {
   focalOverWidth?: number;
   /** Multiplier applied to MediaPipe's world landmarks (1 = MediaPipe's average hand). */
   handScale?: number;
+  /** Calibrated length (metres) of each of the 20 skeleton bones, per hand. */
+  boneLengths?: { Left?: number[]; Right?: number[] };
 }
 
 const STORAGE_PREFIX = 'webhands:calibration:';

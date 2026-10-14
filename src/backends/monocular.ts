@@ -1,7 +1,8 @@
 import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
 import { onVideoFrame, openCamera, type CameraHandle } from '../camera';
 import { OneEuroFilter, type OneEuroOptions } from '../filter/oneEuro';
-import { solvePose, transformPoints } from '../geometry/solvePose';
+import { retarget, translationFromBones } from '../geometry/bones';
+import { reprojectionError, solvePose, transformPoints, type Pose } from '../geometry/solvePose';
 import {
   intrinsicsFromCalibration,
   loadCalibration,
@@ -29,8 +30,20 @@ export interface MonocularOptions {
   intrinsics?: Intrinsics;
   /** Multiplier on MediaPipe's average-sized hand. If omitted: stored calibration, else 1. */
   handScale?: number;
-  /** Also solve for hand rotation instead of trusting MediaPipe's world orientation. */
+  /** Also solve for hand rotation instead of trusting MediaPipe's world orientation ('pnp' only). */
   refineRotation?: boolean;
+  /**
+   * How to place the hand in depth.
+   * - 'pnp': fit all joints' reprojection (default). Best if MediaPipe's relative
+   *   joint depths are accurate.
+   * - 'bones': per-bone depth L·cos(tilt)/(image length), trusting bones that lie
+   *   flat to the camera. More robust if MediaPipe flattens or distorts depth.
+   * Either way, calibrated bone lengths (if any) replace MediaPipe's per-frame
+   * hand size, which is what makes the distance drift with pose.
+   */
+  depthMethod?: DepthMethod;
+  /** Calibrated bone lengths per hand. If omitted: stored calibration. */
+  boneLengths?: BoneLengthsByHand;
   /** One Euro filter settings for the output joints, or false to disable. */
   smoothing?: OneEuroOptions | false;
   numHands?: number;
@@ -41,6 +54,9 @@ export interface MonocularOptions {
   modelAssetPath?: string;
 }
 
+export type DepthMethod = 'pnp' | 'bones';
+export type BoneLengthsByHand = Partial<Record<Handedness, ArrayLike<number>>>;
+
 /**
  * Single-camera 3D hands: MediaPipe gives each hand's metric shape (world
  * landmarks, origin at the hand centre) and its 2D image landmarks; a
@@ -50,6 +66,8 @@ export class MonocularHandTracker implements HandTrackerBackend {
   intrinsics: Intrinsics | null;
   handScale: number;
   refineRotation: boolean;
+  depthMethod: DepthMethod;
+  boneLengths: BoneLengthsByHand;
   camera: CameraHandle | null = null;
   /** Identifier used for stored calibration, available after start(). */
   cameraId = '';
@@ -67,6 +85,8 @@ export class MonocularHandTracker implements HandTrackerBackend {
     this.intrinsics = options.intrinsics ?? null;
     this.handScale = options.handScale ?? 1;
     this.refineRotation = options.refineRotation ?? false;
+    this.depthMethod = options.depthMethod ?? 'pnp';
+    this.boneLengths = options.boneLengths ?? {};
   }
 
   onFrame(listener: HandFrameListener): () => void {
@@ -90,6 +110,7 @@ export class MonocularHandTracker implements HandTrackerBackend {
     // Reload per-camera calibration on every start, since the camera may have changed.
     const stored = loadCalibration(this.cameraId);
     if (o.handScale === undefined) this.handScale = stored.handScale ?? 1;
+    if (!o.boneLengths) this.boneLengths = stored.boneLengths ?? {};
     if (!o.intrinsics) {
       this.intrinsics = intrinsicsFromCalibration(
         this.video.videoWidth,
@@ -155,14 +176,15 @@ export class MonocularHandTracker implements HandTrackerBackend {
         world[i * 3 + 1] = p.y;
         world[i * 3 + 2] = p.z;
       });
-      const model = world.map((v) => v * this.handScale);
-      const pose = solvePose(model, image, k, { refineRotation: this.refineRotation });
-      const joints = transformPoints(model, pose);
-
       // MediaPipe's label is correct for unmirrored camera frames (verified in the demo).
       const category = result.handedness[h]?.[0];
       let handedness: Handedness = category?.categoryName === 'Left' ? 'Left' : 'Right';
       if (this.options.mirroredInput) handedness = handedness === 'Left' ? 'Right' : 'Left';
+
+      const lengths = this.boneLengths[handedness];
+      const model = lengths ? retarget(world, lengths) : world.map((v) => v * this.handScale);
+      const pose = this.placeHand(model, image, k);
+      const joints = transformPoints(model, pose);
 
       if (this.options.smoothing !== false && !seen.has(handedness)) {
         let filter = this.filters.get(handedness);
@@ -189,5 +211,16 @@ export class MonocularHandTracker implements HandTrackerBackend {
     }
     for (const key of this.filters.keys()) if (!seen.has(key)) this.filters.get(key)!.reset();
     for (const listener of this.listeners) listener(hands);
+  }
+
+  private placeHand(model: Float32Array, image: Float32Array, k: Intrinsics): Pose {
+    if (this.depthMethod === 'bones') {
+      const translation = translationFromBones(model, image, k);
+      if (translation) {
+        const pose = { rotation: Float64Array.of(1, 0, 0, 0, 1, 0, 0, 0, 1), translation };
+        return { ...pose, reprojectionError: reprojectionError(model, image, k, pose) };
+      }
+    }
+    return solvePose(model, image, k, { refineRotation: this.refineRotation });
   }
 }

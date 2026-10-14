@@ -8,6 +8,7 @@ export {
   projectPoints,
   transformPoints,
   rodrigues,
+  reprojectionError,
   type Pose,
   type SolvePoseOptions,
 } from './geometry/solvePose';
@@ -16,6 +17,8 @@ export {
   DEFAULT_MODEL_PATH,
   DEFAULT_WASM_PATH,
   type MonocularOptions,
+  type DepthMethod,
+  type BoneLengthsByHand,
 } from './backends/monocular';
 export {
   modelHandLength,
@@ -30,3 +33,17 @@ export {
   type KnownLength,
   type KnownRectangle,
 } from './calibration';
+export {
+  JOINT_PARENTS,
+  NUM_BONES,
+  boneLengths,
+  retarget,
+  translationFromBones,
+  type BoneDepthOptions,
+} from './geometry/bones';
+export {
+  calibrateBoneLengths,
+  calibrateHandsBoneLengths,
+  collectHands,
+  type BoneCalibrationOptions,
+} from './calibration/bones';

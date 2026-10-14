@@ -24,8 +24,9 @@ calibrate using objects you probably have (no ruler needed):
    hold it tilted ~45° away from the camera, click **Freeze & click corners**
    and click its 4 corners. Repeat for a few views. Or hold your hand at a
    measured distance.
-3. **Bone lengths** (fixes distance drifting with hand pose): show both hands
-   and slowly turn them in every direction for 8 s.
+3. **Hand skeleton** (bone lengths and palm shape; fixes distance drifting with
+   pose and tilted hands being pushed back): show both hands and slowly turn
+   them in every direction for 8 s.
 
 Calibration is saved per camera in `localStorage`.
 

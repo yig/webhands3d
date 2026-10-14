@@ -177,7 +177,7 @@ function updateReadout(hands: Hand3D[]) {
     const wrist = h.joints;
     const w = h.debug?.worldLandmarks;
     lines.push(
-      `${h.handedness.padEnd(5)} conf ${h.confidence.toFixed(2)}   bones ${tracker.boneLengths[h.handedness] ? 'calibrated' : 'MediaPipe'}`,
+      `${h.handedness.padEnd(5)} conf ${h.confidence.toFixed(2)}   skeleton ${tracker.skeletons[h.handedness] ? 'calibrated' : 'MediaPipe'}`,
       c ? `  centre  x ${cm(c[0])} y ${cm(c[1])} z ${cm(c[2])}` : '',
       `  wrist   x ${cm(wrist[0])} y ${cm(wrist[1])} z ${cm(wrist[2])}`,
       `  reproj  ${h.debug?.reprojectionError?.toFixed(1) ?? '?'} px`,
@@ -302,15 +302,18 @@ $('calScale').addEventListener('click', () =>
     if (!Number.isFinite(scale)) throw new Error('Calibration failed');
     // Bone lengths carry the overall size too; rescale them to match.
     const ratio = scale / tracker.handScale;
-    const stored: StoredCalibration['boneLengths'] = {};
+    const stored: StoredCalibration['skeletons'] = {};
     for (const side of ['Left', 'Right'] as const) {
-      const lengths = tracker.boneLengths[side];
-      if (!lengths) continue;
-      tracker.boneLengths[side] = Array.from(lengths, (l) => l * ratio);
-      stored[side] = Array.from(tracker.boneLengths[side]!);
+      const skeleton = tracker.skeletons[side];
+      if (!skeleton) continue;
+      stored[side] = {
+        lengths: Array.from(skeleton.lengths, (l) => l * ratio),
+        palm: Array.from(skeleton.palm, (v) => v * ratio),
+      };
+      tracker.skeletons[side] = stored[side];
     }
     tracker.handScale = scale;
-    persist({ handScale: scale, boneLengths: stored });
+    persist({ handScale: scale, skeletons: stored });
     return `Hand scale ${scale.toFixed(3)} from ${samples.length} frames`;
   }),
 );
@@ -429,7 +432,7 @@ overlay.addEventListener('click', (e) => {
 
 // --- Step 3: bone lengths ---
 function updateBonesState() {
-  const sides = (['Left', 'Right'] as const).filter((s) => tracker.boneLengths[s]);
+  const sides = (['Left', 'Right'] as const).filter((s) => tracker.skeletons[s]);
   $('bonesState').textContent = sides.length ? `Calibrated: ${sides.join(', ')}` : 'Not calibrated';
 }
 
@@ -444,13 +447,14 @@ $('calBones').addEventListener('click', async () => {
     const result = calibrateHandsBoneLengths(samples, k, tracker.handScale);
     const sides = (['Left', 'Right'] as const).filter((s) => result[s]);
     if (!sides.length) throw new Error('Not enough frames of either hand; try again');
-    const stored: StoredCalibration['boneLengths'] = { ...loadCalibration(tracker.cameraId).boneLengths };
+    const stored: StoredCalibration['skeletons'] = { ...loadCalibration(tracker.cameraId).skeletons };
     for (const side of sides) {
-      tracker.boneLengths[side] = result[side]!;
-      stored[side] = Array.from(result[side]!);
+      const { lengths, palm } = result[side]!;
+      stored[side] = { lengths: Array.from(lengths), palm: Array.from(palm) };
+      tracker.skeletons[side] = stored[side];
     }
-    persist({ boneLengths: stored });
-    const mm = sides.map((s) => `${s} ${(result[s]!.reduce((a, b) => a + b, 0) * 1000).toFixed(0)} mm`);
+    persist({ skeletons: stored });
+    const mm = sides.map((s) => `${s} ${(result[s]!.lengths.reduce((a, b) => a + b, 0) * 1000).toFixed(0)} mm`);
     status.textContent = `Bone lengths calibrated (total: ${mm.join(', ')})`;
   } catch (e) {
     status.textContent = String(e instanceof Error ? e.message : e);
@@ -465,7 +469,7 @@ $('calReset').addEventListener('click', () => {
   if (!k) return;
   saveCalibration(tracker.cameraId, {});
   tracker.handScale = 1;
-  tracker.boneLengths = {};
+  tracker.skeletons = {};
   updateBonesState();
   tracker.intrinsics = intrinsicsFromFov(k.width, k.height);
   fovInput.value = fovFromIntrinsics(tracker.intrinsics).toFixed(1);

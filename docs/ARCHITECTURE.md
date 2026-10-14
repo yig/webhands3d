@@ -31,12 +31,14 @@ src/
   filter/oneEuro.ts        One Euro filter over a vector
   geometry/numeric.ts      dense linear solve, median, percentile, weighted median
   geometry/bones.ts        skeleton tree, retarget to fixed bone lengths, depth from flattest bones
+  geometry/rigid.ts        Kabsch/Horn rotation alignment
+  geometry/skeleton.ts     placeSkeleton: rigid palm fit + per-bone ray–sphere (default placement)
   calibration/index.ts     hand-scale and focal-length calibration from hand samples
   calibration/objects.ts   known-size everyday objects; grip scale; focal from a clicked rectangle
-  calibration/bones.ts     per-hand bone-length calibration (longest appearance = true length)
+  calibration/bones.ts     per-hand skeleton calibration: bone lengths (longest appearance) + palm template
   backends/monocular.ts    MonocularHandTracker (MediaPipe + solvePose + smoothing)
 demo/                      Vite dev page: video + 2D overlay, three.js 3D view, calibration UI
-test/                      vitest unit tests (synthetic PnP, rectangle focal, bone lengths vs. drift)
+test/                      vitest unit tests; test/sim.ts simulates MediaPipe errors (size, flattened z)
 ```
 
 Dependencies: `@mediapipe/tasks-vision` (runtime; WASM and model fetched from
@@ -84,10 +86,24 @@ forced strictly increasing for MediaPipe):
 
 1. `HandLandmarker.detectForVideo` (VIDEO mode, GPU delegate, up to 2 hands) →
    per hand: image landmarks (normalised → pixels) and world landmarks W (m).
-2. Model P: if this hand's bone lengths are calibrated, `retarget(W, L)` keeps
-   MediaPipe's bone directions but sets each bone to its calibrated length;
-   otherwise P = s · W (s = hand scale).
-3. Place the hand (`depthMethod`):
+2. Place the hand (`depthMethod`):
+   - **`'skeleton'`** (default; needs a calibrated skeleton, else falls back to
+     `'pnp'`) — `placeSkeleton(W, uv, K, L, palm)`:
+     1. *Palm*: the calibrated 5-point palm template (wrist + 4 MCPs), rotated to
+        MediaPipe's palm orientation by Kabsch, then a rigid 6-DoF
+        Levenberg–Marquardt fit to the 5 palm image points. Tilting a flat shape
+        only shortens it across the tilt axis, so the fitted depth is right at
+        any tilt. MediaPipe only seeds the rotation, which picks between the
+        two mirror-image tilt solutions.
+     2. *Every other joint*, parents first: on its camera ray at exactly its bone
+        length from its parent (ray–sphere intersection). Of the two
+        intersections (bone toward / away from the camera), take the one whose
+        direction agrees with MediaPipe's bone; if the ray misses (bone looks
+        longer than L, i.e. noise), the ray's closest point.
+     So foreshortening comes from the image and calibrated lengths, not from
+     MediaPipe's z — which under-reports tilt and pushed tilted hands back.
+   For the other two methods the model is P = `retarget(W, L)` (MediaPipe's bone
+   directions, calibrated lengths) if calibrated, else P = s · W (s = hand scale):
    - **`'pnp'`** — `solvePose(P, uv, K)`: linear init with R = I (each joint gives
      `tx − x̂·tz = x̂·Pz − Px`, `ty − ŷ·tz = ŷ·Pz − Py`) → Levenberg–Marquardt on
      pixel reprojection error over t, plus a rotation update if `refineRotation`.
@@ -97,7 +113,7 @@ forced strictly increasing for MediaPipe):
      bones flat to the camera dominate (tilt errors are second-order there).
      Capped by the bound depth ≤ L/a (a bone can only look shorter). x, y by
      least squares given depth.
-4. Joints = R · P + t; One Euro filter per handedness (default
+3. One Euro filter per handedness (default
    `minCutoff 1.5, beta 5`); filters reset when a hand disappears.
 
 ### Calibration
@@ -124,18 +140,24 @@ are two steps. Each offers everyday objects of known size so no ruler is needed
    - *Or* hold the hand (after step 1) centred at a measured distance;
      f' = f · measured / median(estimated z).
 
-3. **Bone lengths L (per hand)** — fixes depth drift. MediaPipe re-estimates
+3. **Hand skeleton (per hand): bone lengths L + palm template** — fixes depth drift. MediaPipe re-estimates
    each hand's size every frame and the estimate changes with pose, so depth
    (≈ f · size / pixel size) drifts with pose, and differently for the two
    hands. True bone lengths are constant and foreshortening only shortens, so
    while the user turns their hands for ~8 s, alternate:
-   - per frame: depth from the current L (`translationFromBones`);
+   - per frame: place the skeleton with the current L (`placeSkeleton`, so frame
+     depth comes from the rigid palm, not MediaPipe's tilt);
    - per bone: L = 90th percentile over frames of (bone depth × normalised image
      length). Not the max: 2D noise only adds length.
+   The palm template is MediaPipe's median palm shape (Kabsch-aligned) from
+   frames where the palm faces the camera within 35° (where MediaPipe's weak z
+   matters least), scaled to the wrist→MCP lengths. The finger bones are then
+   measured relative to the palm.
    Depth and L share one overall scale, set to `handScale` × MediaPipe's median
    hand size averaged over both hands — i.e. **left and right hands are assumed
    the same size**, so their distances agree. Recalibrating hand size (step 1)
-   rescales stored bone lengths.
+   rescales the stored skeletons. Stored under `skeletons` in the calibration
+   (an earlier `boneLengths` key is ignored; recalibrate).
 
 **Object size matters for the rectangle method** (simulated, 1.5 px uniform
 click noise, single view, median / 90th-percentile focal error):
@@ -160,17 +182,31 @@ noise; wrist depth RMS error, and correlation with the size error):
 | flattened (z × 0.7) | 9.2 % | 5.9 % | **5.7 %** |
 | flattened (z × 0.5) | 9.6 % | 10.4 % | **6.8 %** |
 
-Calibrated bone lengths remove the size-driven drift either way. Which
-placement method is better depends on how faithful MediaPipe's relative depths
-are, which is unknown, so both are offered (`depthMethod`, demo dropdown).
-Bone-length calibration itself recovers lengths to ~2 % RMS in the same
-simulation.
+| … | **Skeleton (palm + rays)** | joint RMS, skeleton vs. PnP-calibrated-L |
+|---|---|---|
+| z × 1 | **1.7 %**, bias −0.2 % | 15 mm vs. 18 mm |
+| z × 0.5 | **1.7 %**, bias −0.2 % | 15 mm vs. 73 mm |
+
+Calibrated bone lengths remove the size-driven drift for every method, but the
+PnP and bones methods still take each bone's tilt from MediaPipe, so when
+MediaPipe flattens depth a tilted hand is pushed back (PnP bias +5.5 % at
+z × 0.5). This matched the observed failure ("one hand foreshortened, the whole
+hand moves back"), and is why `'skeleton'` is now the default: its error doesn't
+depend on MediaPipe's z at all. Its remaining joint error is mostly overall
+placement from 2D noise (~10 mm at 45–80 cm). Skeleton calibration recovers bone
+lengths to < 6 % RMS even with z × 0.5.
 
 Without calibration: s = 1 (MediaPipe's average hand) and a 60° horizontal FOV.
 Lateral position error scales with focal error; depth error scales with both.
 
 ## Open questions / to verify empirically
 
+- Does `'skeleton'` fix the foreshortening push-back on real hands?
+- Toward/away flips: when a finger bone lies nearly in a plane through the camera
+  ray, the two ray–sphere solutions are close and MediaPipe's z picks; if its
+  sign is wrong the bone flips. May need temporal hysteresis.
+- Palm rigidity: cupping the hand bends the MCP arch; the 5-point palm fit then
+  absorbs some error into the palm pose.
 - Does bone-length calibration remove the observed left/right depth drift on
   real hands, and which `depthMethod` is better? Demo readout shows MediaPipe's
   raw palm size per hand (confirms the cause if it varies with pose) and the
@@ -197,6 +233,7 @@ Lateral position error scales with focal error; depth error scales with both.
 
 1. ✅ Monocular backend, calibration with everyday objects, demo.
 1b. ✅ Bone-length calibration and bone-based depth (pose-dependent drift).
+1c. ✅ Skeleton placement: rigid palm + ray–sphere fingers (foreshortening push-back).
 2. Stereo in one tab (two `getUserMedia`, capture-time pairing, hand-keypoint
    self-calibration, triangulation; fall back to monocular per view on occlusion).
 3. Two-device mode over WebRTC.

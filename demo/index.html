@@ -108,7 +108,7 @@
         <label>Device <select id="camera"></select></label>
         <label>Horizontal FOV (°) <input id="fov" type="number" step="0.5" min="20" max="140" /></label>
         <label><span>Mirror video</span><input id="mirror" type="checkbox" checked /></label>
-        <label>Depth from <select id="depthMethod"><option value="pnp">All joints (PnP)</option><option value="bones">Flattest bones</option></select></label>
+        <label>Placement <select id="depthMethod"><option value="skeleton">Palm + bone rays</option><option value="pnp">All joints (PnP)</option><option value="bones">Flattest bones</option></select></label>
         <label><span>Solve rotation too (PnP)</span><input id="refine" type="checkbox" /></label>
         <p class="hint legend"><span style="background:#3ccf6e"></span>MediaPipe 2D <span style="background:#ff5a4f;margin-left:8px"></span>3D reprojected</p>
 
@@ -126,11 +126,11 @@
         <button id="cancelFreeze" hidden>Cancel</button>
         <p class="hint" id="focalViews"></p>
 
-        <h2>3 · Bone lengths</h2>
+        <h2>3 · Hand skeleton</h2>
         <p class="hint">Needs step 1 (sets the overall size). Show both hands, fingers spread, and
           slowly turn them every way (palm to the camera, tilted, sideways) and bend the fingers.
-          Each bone's longest appearance is its true length.</p>
-        <button id="calBones">Calibrate bone lengths (8 s)</button>
+          Each bone's longest appearance is its true length; the palm shape is learned too.</p>
+        <button id="calBones">Calibrate skeleton (8 s)</button>
         <p class="hint" id="bonesState"></p>
 
         <p class="hint"><button id="calReset">Reset calibration</button></p>

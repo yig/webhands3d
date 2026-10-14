@@ -18,7 +18,7 @@ export {
   DEFAULT_WASM_PATH,
   type MonocularOptions,
   type DepthMethod,
-  type BoneLengthsByHand,
+  type SkeletonsByHand,
 } from './backends/monocular';
 export {
   modelHandLength,
@@ -41,7 +41,12 @@ export {
   translationFromBones,
   type BoneDepthOptions,
 } from './geometry/bones';
+export { PALM_JOINTS, placeSkeleton, type SkeletonPlacement } from './geometry/skeleton';
+export { kabsch } from './geometry/rigid';
 export {
+  calibrateHandSkeleton,
+  palmTemplateFromMediaPipe,
+  type HandSkeleton,
   calibrateBoneLengths,
   calibrateHandsBoneLengths,
   collectHands,

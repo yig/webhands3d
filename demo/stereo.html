@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>webhands stereo demo</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main>
+      <div class="stack">
+        <div class="view">
+          <span class="label">Camera A (reference)</span>
+          <div class="videoWrap mirror"><video id="video0" muted playsinline></video><canvas id="overlay0"></canvas></div>
+        </div>
+        <div class="view">
+          <span class="label">Camera B</span>
+          <div class="videoWrap mirror"><video id="video1" muted playsinline></video><canvas id="overlay1"></canvas></div>
+        </div>
+      </div>
+      <div class="view" id="scene"></div>
+      <aside>
+        <nav><a href="./index.html">One camera</a> · Two cameras</nav>
+        <h1>webhands · stereo</h1>
+        <p class="hint">Two cameras in one tab: e.g. the laptop camera and an iPhone via Continuity Camera.
+          Put them 20–50 cm apart, both seeing where your hands will be. Turn off Center Stage
+          (Control Center → Video Effects): it crops and zooms, which changes the camera geometry.</p>
+        <label>Camera A <select id="camera0"></select></label>
+        <label>Camera B <select id="camera1"></select></label>
+        <button id="start" class="primary">Start cameras</button>
+        <div id="status"></div>
+
+        <h2>1 · Each camera</h2>
+        <p class="hint">Field of view per camera, or click a tilted sheet of paper's corners in that
+          camera's view (more accurate; add a few views).</p>
+        <label>A: horizontal FOV (°) <input id="fov0" type="number" step="0.5" min="20" max="140" /></label>
+        <button id="paper0">A: click A4 corners</button>
+        <label>B: horizontal FOV (°) <input id="fov1" type="number" step="0.5" min="20" max="140" /></label>
+        <button id="paper1">B: click A4 corners</button>
+
+        <h2>2 · Hand size (scale)</h2>
+        <p class="hint">Hold a credit card by its long edge between thumb tip and index fingertip, facing camera A.</p>
+        <button id="handSize">Calibrate hand size</button>
+
+        <h2>3 · Camera pair</h2>
+        <p class="hint">Hold up one open hand where both cameras see it. Move it slowly through the whole
+          shared space for 12 s: near and far, left and right, up and down, turning it.</p>
+        <button id="calStereo" class="primary">Calibrate camera pair (12 s)</button>
+        <p class="hint" id="stereoState"></p>
+        <p class="hint"><button id="resetStereo">Reset camera pair</button></p>
+
+        <h2>Tracking</h2>
+        <div id="readout">–</div>
+      </aside>
+    </main>
+    <script type="module" src="./stereo.ts"></script>
+  </body>
+</html>

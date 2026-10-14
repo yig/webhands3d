@@ -44,10 +44,13 @@ export interface Hand3D {
     center?: Float32Array;
     /** RMS reprojection error of `joints` against `landmarks2d`, in pixels. */
     reprojectionError?: number;
+    /** Multi-camera backends: which view(s) produced `joints`. */
+    source?: 'stereo' | 'view0' | 'view1';
   };
 }
 
-export type HandFrameListener = (hands: Hand3D[]) => void;
+/** Called once per processed frame; `timestamp` is the frame's capture time (also when no hands are seen). */
+export type HandFrameListener = (hands: Hand3D[], timestamp: number) => void;
 
 /** Common interface for every tracking backend (monocular, stereo, WebXR, ...). */
 export interface HandTrackerBackend {

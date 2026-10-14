@@ -1,21 +1,16 @@
-import * as THREE from 'three';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import {
-  HAND_BONES,
   KNOWN_LENGTHS,
   KNOWN_RECTANGLES,
   MonocularHandTracker,
-  NUM_JOINTS,
   listCameras,
   openCamera,
   pickCorners,
-  projectPoints,
   type CalibrationStatus,
   type CameraHandle,
   type DepthMethod,
   type Hand3D,
-  type Handedness,
 } from '../src';
+import { cm, createHandScene, drawHandOverlay, fpsCounter } from './shared';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const video = $<HTMLVideoElement>('video');
@@ -30,137 +25,26 @@ const depthMethodInput = $<HTMLSelectElement>('depthMethod');
 const tracker = new MonocularHandTracker({ video });
 let camera: CameraHandle | null = null;
 
-// ---------- 3D view ----------
-const sceneEl = $<HTMLDivElement>('scene');
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(devicePixelRatio);
-sceneEl.appendChild(renderer.domElement);
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x101418);
-const view = new THREE.PerspectiveCamera(50, 1, 0.01, 20);
-view.position.set(0.9, 0.5, 0.4);
-const orbit = new OrbitControls(view, renderer.domElement);
-orbit.target.set(0, 0, -0.5);
-orbit.update();
-scene.add(new THREE.HemisphereLight(0xffffff, 0x334455, 2.5));
-
-// Floor grid 30 cm below the camera, 10 cm squares, extending forward.
-const grid = new THREE.GridHelper(2, 20, 0x3a4652, 0x26303a);
-grid.position.set(0, -0.3, -1);
-scene.add(grid);
-
-// Webcam frustum (OpenCV camera frame → three.js: x, -y, -z).
-const frustum = new THREE.LineSegments(
-  new THREE.BufferGeometry(),
-  new THREE.LineBasicMaterial({ color: 0x8899aa }),
-);
-scene.add(frustum);
+// ---------- views ----------
+const scene3d = createHandScene($<HTMLDivElement>('scene'));
 function updateFrustum() {
-  const k = tracker.intrinsics;
-  if (!k) return;
-  const d = 0.1;
-  const corners = [
-    [0, 0], [k.width, 0], [k.width, k.height], [0, k.height],
-  ].map(([u, v]) => new THREE.Vector3(((u - k.cx) / k.fx) * d, -((v - k.cy) / k.fy) * d, -d));
-  const o = new THREE.Vector3();
-  const pts: THREE.Vector3[] = [];
-  for (let i = 0; i < 4; i++) pts.push(o, corners[i], corners[i], corners[(i + 1) % 4]);
-  frustum.geometry.setFromPoints(pts);
+  if (tracker.intrinsics) scene3d.setCameras([{ k: tracker.intrinsics }]);
 }
-
-const HAND_COLORS: Record<Handedness, number> = { Left: 0x4fa3ff, Right: 0xffa54f };
-const handMeshes = new Map<Handedness, { joints: THREE.InstancedMesh; bones: THREE.LineSegments }>();
-for (const side of ['Left', 'Right'] as Handedness[]) {
-  const material = new THREE.MeshStandardMaterial({ color: HAND_COLORS[side] });
-  const joints = new THREE.InstancedMesh(new THREE.SphereGeometry(0.006, 12, 8), material, NUM_JOINTS);
-  const bones = new THREE.LineSegments(
-    new THREE.BufferGeometry().setAttribute(
-      'position',
-      new THREE.BufferAttribute(new Float32Array(HAND_BONES.length * 6), 3),
-    ),
-    new THREE.LineBasicMaterial({ color: HAND_COLORS[side] }),
-  );
-  joints.visible = bones.visible = false;
-  joints.frustumCulled = bones.frustumCulled = false;
-  scene.add(joints, bones);
-  handMeshes.set(side, { joints, bones });
-}
-
-function updateHands3D(hands: Hand3D[]) {
-  const m = new THREE.Matrix4();
-  for (const [side, mesh] of handMeshes) {
-    const hand = hands.find((h) => h.handedness === side);
-    mesh.joints.visible = mesh.bones.visible = !!hand;
-    if (!hand) continue;
-    const j = hand.joints;
-    for (let i = 0; i < NUM_JOINTS; i++) {
-      mesh.joints.setMatrixAt(i, m.makeTranslation(j[i * 3], -j[i * 3 + 1], -j[i * 3 + 2]));
-    }
-    mesh.joints.instanceMatrix.needsUpdate = true;
-    const pos = mesh.bones.geometry.getAttribute('position') as THREE.BufferAttribute;
-    HAND_BONES.forEach(([a, b], i) => {
-      pos.setXYZ(i * 2, j[a * 3], -j[a * 3 + 1], -j[a * 3 + 2]);
-      pos.setXYZ(i * 2 + 1, j[b * 3], -j[b * 3 + 1], -j[b * 3 + 2]);
-    });
-    pos.needsUpdate = true;
-  }
-}
-
-function resize() {
-  const { clientWidth: w, clientHeight: h } = sceneEl;
-  renderer.setSize(w, h, false);
-  view.aspect = w / Math.max(h, 1);
-  view.updateProjectionMatrix();
-}
-new ResizeObserver(resize).observe(sceneEl);
-renderer.setAnimationLoop(() => renderer.render(scene, view));
-
-// ---------- 2D overlay ----------
-const ctx = overlay.getContext('2d')!;
 function drawOverlay(hands: Hand3D[]) {
   const k = tracker.intrinsics;
   if (!k) return;
-  if (overlay.width !== k.width || overlay.height !== k.height) {
-    overlay.width = k.width;
-    overlay.height = k.height;
-  }
-  ctx.clearRect(0, 0, overlay.width, overlay.height);
-  const r = Math.max(2, k.width / 300);
-  for (const hand of hands) {
-    const detected = hand.debug?.landmarks2d;
-    if (detected) drawSkeleton(detected, '#3ccf6e', r);
-    drawSkeleton(projectPoints(hand.joints, k), '#ff5a4f', r * 0.7);
-  }
-}
-function drawSkeleton(uv: ArrayLike<number>, color: string, r: number) {
-  ctx.strokeStyle = ctx.fillStyle = color;
-  ctx.lineWidth = r * 0.6;
-  ctx.beginPath();
-  for (const [a, b] of HAND_BONES) {
-    ctx.moveTo(uv[a * 2], uv[a * 2 + 1]);
-    ctx.lineTo(uv[b * 2], uv[b * 2 + 1]);
-  }
-  ctx.stroke();
-  for (let i = 0; i < NUM_JOINTS; i++) {
-    ctx.beginPath();
-    ctx.arc(uv[i * 2], uv[i * 2 + 1], r, 0, Math.PI * 2);
-    ctx.fill();
-  }
+  drawHandOverlay(
+    overlay,
+    k,
+    hands.flatMap((h) => (h.debug?.landmarks2d ? [h.debug.landmarks2d] : [])),
+    hands.map((h) => h.joints),
+  );
 }
 
 // ---------- readout ----------
-let frames = 0;
-let fps = 0;
-let fpsStart = performance.now();
+const fps = fpsCounter();
 function updateReadout(hands: Hand3D[]) {
-  frames++;
-  const now = performance.now();
-  if (now - fpsStart > 1000) {
-    fps = (frames * 1000) / (now - fpsStart);
-    frames = 0;
-    fpsStart = now;
-  }
-  const lines = [`${fps.toFixed(0)} fps   hand scale ${tracker.handScale.toFixed(3)}`];
+  const lines = [`${fps().toFixed(0)} fps   hand scale ${tracker.handScale.toFixed(3)}`];
   if (!hands.length) lines.push('no hands');
   for (const h of hands) {
     const c = h.debug?.center;
@@ -187,10 +71,9 @@ function palmSize(w: ArrayLike<number>) {
     Math.hypot(w[a * 3] - w[b * 3], w[a * 3 + 1] - w[b * 3 + 1], w[a * 3 + 2] - w[b * 3 + 2]);
   return (d(0, 5) + d(0, 17) + d(5, 17)) / 3;
 }
-const cm = (m: number) => (m * 100).toFixed(1).padStart(6) + 'cm';
 
 tracker.onFrame((hands) => {
-  updateHands3D(hands);
+  scene3d.updateHands(hands);
   drawOverlay(hands);
   updateReadout(hands);
 });

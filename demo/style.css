@@ -1,0 +1,94 @@
+:root {
+  --bg: #f6f6f4;
+  --panel: #ffffff;
+  --text: #1d1d1b;
+  --muted: #6b6b66;
+  --border: #dddcd6;
+  --accent: #2f6fdb;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141414;
+    --panel: #1e1e1e;
+    --text: #ececea;
+    --muted: #9a9a94;
+    --border: #333331;
+    --accent: #6b9cff;
+  }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body {
+  margin: 0;
+  font: 14px/1.4 system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 300px;
+  gap: 12px;
+  padding: 12px;
+  height: 100vh;
+}
+@media (max-width: 1000px) {
+  main { grid-template-columns: 1fr; height: auto; }
+  #scene { height: 60vh; }
+}
+.view {
+  position: relative;
+  background: #000;
+  border-radius: 8px;
+  overflow: hidden;
+  min-height: 240px;
+}
+.videoWrap.mirror { transform: scaleX(-1); }
+.videoWrap, .videoWrap video, .videoWrap canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+#scene canvas { display: block; width: 100%; height: 100%; }
+aside {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  overflow-y: auto;
+}
+h1 { font-size: 16px; margin: 0 0 4px; }
+h2 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin: 18px 0 6px;
+}
+p.hint { color: var(--muted); font-size: 12px; margin: 4px 0 8px; }
+label { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 6px 0; }
+input[type='number'] { width: 80px; }
+select { max-width: 170px; }
+button {
+  font: inherit;
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button:disabled { opacity: 0.5; cursor: default; }
+#readout { font: 12px/1.5 ui-monospace, monospace; white-space: pre; }
+#status { color: var(--muted); font-size: 12px; min-height: 1.4em; }
+.legend span { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; }
+.stack { display: grid; grid-template-rows: 1fr 1fr; gap: 12px; min-height: 0; }
+.stack .view { min-height: 0; }
+.label {
+  position: absolute; top: 6px; left: 8px; z-index: 1;
+  font-size: 12px; color: #fff; background: rgba(0, 0, 0, 0.45); padding: 1px 6px; border-radius: 4px;
+}
+nav { font-size: 12px; margin-bottom: 8px; }
+nav a { color: var(--accent); }

@@ -224,7 +224,7 @@ export class MonocularHandTracker implements HandTrackerBackend {
       });
     }
     for (const key of this.filters.keys()) if (!seen.has(key)) this.filters.get(key)!.reset();
-    for (const listener of this.listeners) listener(hands);
+    for (const listener of this.listeners) listener(hands, timestamp);
   }
 
   private placeHand(

@@ -16,7 +16,7 @@ class FakeTracker implements CalibratableTracker {
     return () => this.listeners.delete(listener);
   }
   emit(hands: Hand3D[]) {
-    for (const l of this.listeners) l(hands);
+    for (const l of this.listeners) l(hands, hands[0]?.timestamp ?? 0);
   }
 }
 

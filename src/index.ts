@@ -63,3 +63,28 @@ export {
   type PrerequisiteOptions,
 } from './calibration/calibrator';
 export { pickCorners, type PickCornersOptions } from './ui/pickCorners';
+export {
+  StereoHandTracker,
+  toCamera0,
+  type StereoOptions,
+  type StereoSource,
+  type StereoStatus,
+} from './backends/stereo';
+export {
+  calibrateStereo,
+  StereoCalibrationError,
+  type StereoCalibration,
+  type StereoCalibrationInput,
+  type StereoCalibrationOptions,
+} from './stereo/calibrate';
+export {
+  eightPoint,
+  ransacEssential,
+  decomposeEssential,
+  refineRelativePose,
+  sampsonDistance,
+  triangulate,
+  triangulateLinear,
+  type RelativePose,
+} from './stereo/epipolar';
+export { groupByFrame, interpolateLandmarks, type TimedHands } from './stereo/pairing';

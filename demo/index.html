@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>webhands demo</title>
+    <style>
+      :root {
+        --bg: #f6f6f4;
+        --panel: #ffffff;
+        --text: #1d1d1b;
+        --muted: #6b6b66;
+        --border: #dddcd6;
+        --accent: #2f6fdb;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #141414;
+          --panel: #1e1e1e;
+          --text: #ececea;
+          --muted: #9a9a94;
+          --border: #333331;
+          --accent: #6b9cff;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font: 14px/1.4 system-ui, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+      main {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 300px;
+        gap: 12px;
+        padding: 12px;
+        height: 100vh;
+      }
+      @media (max-width: 1000px) {
+        main { grid-template-columns: 1fr; height: auto; }
+        #scene { height: 60vh; }
+      }
+      .view {
+        position: relative;
+        background: #000;
+        border-radius: 8px;
+        overflow: hidden;
+        min-height: 240px;
+      }
+      #videoWrap.mirror { transform: scaleX(-1); }
+      #videoWrap, #videoWrap video, #videoWrap canvas {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+      }
+      #scene canvas { display: block; width: 100%; height: 100%; }
+      aside {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 12px 14px;
+        overflow-y: auto;
+      }
+      h1 { font-size: 16px; margin: 0 0 4px; }
+      h2 {
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--muted);
+        margin: 18px 0 6px;
+      }
+      p.hint { color: var(--muted); font-size: 12px; margin: 4px 0 8px; }
+      label { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 6px 0; }
+      input[type='number'] { width: 80px; }
+      select { max-width: 170px; }
+      button {
+        font: inherit;
+        padding: 5px 10px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: var(--bg);
+        color: var(--text);
+        cursor: pointer;
+      }
+      button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+      button:disabled { opacity: 0.5; cursor: default; }
+      #readout { font: 12px/1.5 ui-monospace, monospace; white-space: pre; }
+      #status { color: var(--muted); font-size: 12px; min-height: 1.4em; }
+      .legend span { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="view"><div id="videoWrap"><video id="video" muted playsinline></video><canvas id="overlay"></canvas></div></div>
+      <div class="view" id="scene"></div>
+      <aside>
+        <h1>webhands</h1>
+        <p class="hint">Monocular 3D hands: MediaPipe + perspective-n-point.</p>
+        <button id="start" class="primary">Start camera</button>
+        <div id="status"></div>
+
+        <h2>Camera</h2>
+        <label>Device <select id="camera"></select></label>
+        <label>Horizontal FOV (°) <input id="fov" type="number" step="0.5" min="20" max="140" /></label>
+        <label><span>Mirror video</span><input id="mirror" type="checkbox" checked /></label>
+        <label><span>Solve rotation too</span><input id="refine" type="checkbox" /></label>
+        <p class="hint legend"><span style="background:#3ccf6e"></span>MediaPipe 2D <span style="background:#ff5a4f;margin-left:8px"></span>3D reprojected</p>
+
+        <h2>Calibrate</h2>
+        <p class="hint">1. Hold one open hand, fingers together, facing the camera.</p>
+        <label>Hand length, wrist→middle tip (cm) <input id="handLength" type="number" step="0.1" value="18.5" /></label>
+        <button id="calScale">Calibrate hand size</button>
+        <p class="hint">2. Hold the same hand centred in the view at a measured distance from the camera.</p>
+        <label>Distance to palm (cm) <input id="distance" type="number" step="1" value="50" /></label>
+        <button id="calFocal">Calibrate distance</button>
+        <p class="hint"><button id="calReset">Reset calibration</button></p>
+
+        <h2>Tracking</h2>
+        <div id="readout">–</div>
+      </aside>
+    </main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

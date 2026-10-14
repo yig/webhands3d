@@ -50,7 +50,6 @@
         min-height: 240px;
       }
       #videoWrap.mirror { transform: scaleX(-1); }
-      #videoWrap.frozen canvas { cursor: crosshair; }
       #videoWrap, #videoWrap video, #videoWrap canvas {
         position: absolute;
         inset: 0;
@@ -123,7 +122,6 @@
         <label id="distanceRow">Camera→palm (cm) <input id="distance" type="number" step="1" value="50" /></label>
         <p class="hint" id="focalHint"></p>
         <button id="calFocal">Calibrate</button>
-        <button id="cancelFreeze" hidden>Cancel</button>
         <p class="hint" id="focalViews"></p>
 
         <h2>3 · Hand skeleton</h2>

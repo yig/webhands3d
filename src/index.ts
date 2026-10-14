@@ -52,3 +52,14 @@ export {
   collectHands,
   type BoneCalibrationOptions,
 } from './calibration/bones';
+export {
+  Calibrator,
+  CalibrationError,
+  type CalibratableTracker,
+  type CalibrationErrorCode,
+  type CalibrationStatus,
+  type CalibrationStep,
+  type CollectOptions,
+  type PrerequisiteOptions,
+} from './calibration/calibrator';
+export { pickCorners, type PickCornersOptions } from './ui/pickCorners';

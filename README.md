@@ -45,6 +45,32 @@ tracker.onFrame((hands) => {
 await tracker.start();
 ```
 
+### Calibration
+
+Calibration is part of the library. Each step collects frames, applies the
+result to the tracker and saves it per camera; steps reject with a
+`CalibrationError` whose `code` explains what to fix.
+
+```ts
+import { pickCorners } from 'webhands';
+
+const cal = tracker.calibrator;
+
+// 1. Hand size: hold a credit card by its long edge between thumb and index tips.
+await cal.handSizeFromObject('card-long');
+
+// 2. Focal length: hold a sheet of A4 tilted ~45°, click its corners; repeat a few times.
+cal.addRectangleView(await pickCorners(video, { mirrored: true }), 'a4');
+
+// 3. Skeleton: turn both hands in every direction for 8 s.
+await cal.skeleton({ onProgress: ({ elapsedMs, frames }) => console.log(elapsedMs, frames) });
+
+console.log(cal.status.missing); // [] when fully calibrated
+```
+
+Objects: `KNOWN_LENGTHS` (card edges, AA/AAA batteries) and `KNOWN_RECTANGLES`
+(A4, US Letter, card, US/€5 banknotes), or pass your own sizes.
+
 ## Scripts
 
 - `npm run dev`: demo dev server

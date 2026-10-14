@@ -1,5 +1,6 @@
 import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
 import { onVideoFrame, openCamera, type CameraHandle } from '../camera';
+import { Calibrator } from '../calibration/calibrator';
 import { OneEuroFilter, type OneEuroOptions } from '../filter/oneEuro';
 import { retarget, translationFromBones } from '../geometry/bones';
 import { placeSkeleton } from '../geometry/skeleton';
@@ -84,6 +85,7 @@ export class MonocularHandTracker implements HandTrackerBackend {
   private video: HTMLVideoElement | null = null;
   private stopLoop: (() => void) | null = null;
   private lastTimestamp = -Infinity;
+  private calibratorInstance: Calibrator | null = null;
 
   constructor(options: MonocularOptions = {}) {
     this.options = options;
@@ -92,6 +94,11 @@ export class MonocularHandTracker implements HandTrackerBackend {
     this.refineRotation = options.refineRotation ?? false;
     this.depthMethod = options.depthMethod ?? 'skeleton';
     this.skeletons = options.skeletons ?? {};
+  }
+
+  /** Calibration steps for this tracker; results are applied and saved per camera. */
+  get calibrator(): Calibrator {
+    return (this.calibratorInstance ??= new Calibrator(this));
   }
 
   onFrame(listener: HandFrameListener): () => void {

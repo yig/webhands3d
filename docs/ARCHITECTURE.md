@@ -36,8 +36,11 @@ src/
   calibration/index.ts     hand-scale and focal-length calibration from hand samples
   calibration/objects.ts   known-size everyday objects; grip scale; focal from a clicked rectangle
   calibration/bones.ts     per-hand skeleton calibration: bone lengths (longest appearance) + palm template
+  calibration/calibrator.ts Calibrator: runs steps against a tracker, applies + saves results (headless)
+  ui/pickCorners.ts        freeze-frame overlay to click a rectangle's corners (optional UI helper)
   backends/monocular.ts    MonocularHandTracker (MediaPipe + solvePose + smoothing)
 demo/                      Vite dev page: video + 2D overlay, three.js 3D view, calibration UI
+                           (calibration uses only the public Calibrator / pickCorners API)
 test/                      vitest unit tests; test/sim.ts simulates MediaPipe errors (size, flattened z)
 ```
 
@@ -63,6 +66,37 @@ interface HandTrackerBackend {
 
 Every backend (monocular, stereo, WebXR) produces `Hand3D` so apps can switch
 backends without changes. `debug` is backend-specific.
+
+### Calibration API
+
+Calibration is a library feature, not demo code. `tracker.calibrator` (a
+`Calibrator`, headless) runs each step: collects frames from the tracker,
+computes, applies the result to the tracker, and saves it per camera.
+
+```ts
+const cal = tracker.calibrator;
+await cal.handSizeFromObject('card-long');        // or handSizeFromLength(0.185)
+cal.addRectangleView(await pickCorners(video, { mirrored: true }), 'a4');  // repeat; median
+// or: await cal.focalFromDistance(0.5); cal.setFieldOfView(70);
+await cal.skeleton({ onProgress, signal });       // 8 s, both hands
+cal.status;       // { handSize, focal: { views, hfovDegrees }, skeleton: { Left, Right }, missing }
+cal.onChange(render); cal.reset();
+```
+
+- Steps reject with `CalibrationError` and a `code`: `not-started`, `no-hand`,
+  `needs-hand-size` (focal-from-distance and skeleton need step 1; opt out with
+  `allowDefaultHandSize`), `degenerate-view`, `unknown-object`, `aborted`.
+- Collecting steps take `durationMs`, `signal` (AbortSignal) and `onProgress`
+  (elapsed time and frames per hand).
+- Consistency rules live here: recalibrating hand size rescales saved
+  skeletons; rectangle views are per camera and per session (median of views);
+  both hands share one overall size.
+- `Calibrator` depends only on `CalibratableTracker` (intrinsics, handScale,
+  skeletons, cameraId, onFrame), so it is unit-tested with a fake tracker fed
+  simulated frames (`test/calibrator.test.ts`), and future backends can reuse it.
+- `pickCorners(video, { mirrored })` is the only DOM piece: it overlays the
+  frozen frame on the video (assumes `object-fit: contain`), collects clicks,
+  and returns image pixels, undoing letterboxing and mirroring. Esc cancels.
 
 ## Conventions
 

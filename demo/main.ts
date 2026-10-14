@@ -6,21 +6,11 @@ import {
   KNOWN_RECTANGLES,
   MonocularHandTracker,
   NUM_JOINTS,
-  calibrateHandsBoneLengths,
-  collectHands,
-  collectSamples,
-  focalFromDistance,
-  fovFromIntrinsics,
-  focalFromRectangle,
-  handScaleFromGrip,
-  handScaleFromLength,
-  intrinsicsFromFov,
   listCameras,
-  loadCalibration,
   openCamera,
+  pickCorners,
   projectPoints,
-  saveCalibration,
-  type StoredCalibration,
+  type CalibrationStatus,
   type CameraHandle,
   type DepthMethod,
   type Hand3D,
@@ -129,7 +119,7 @@ renderer.setAnimationLoop(() => renderer.render(scene, view));
 const ctx = overlay.getContext('2d')!;
 function drawOverlay(hands: Hand3D[]) {
   const k = tracker.intrinsics;
-  if (!k || freeze) return;
+  if (!k) return;
   if (overlay.width !== k.width || overlay.height !== k.height) {
     overlay.width = k.width;
     overlay.height = k.height;
@@ -206,6 +196,9 @@ tracker.onFrame((hands) => {
 });
 
 // ---------- controls ----------
+// Everything below uses only the public calibration API (tracker.calibrator, pickCorners).
+const cal = tracker.calibrator;
+
 async function startCamera(deviceId?: string) {
   tracker.stop();
   camera?.stop();
@@ -214,9 +207,7 @@ async function startCamera(deviceId?: string) {
   status.textContent = 'Loading MediaPipe…';
   await tracker.start();
   status.textContent = camera.label;
-  updateBonesState();
-  fovInput.value = fovFromIntrinsics(tracker.intrinsics!).toFixed(1);
-  updateFrustum();
+  renderCalibration(cal.status);
   await populateCameras(camera.cameraId);
 }
 
@@ -227,55 +218,50 @@ async function populateCameras(selected: string) {
   );
 }
 
-function persist(patch: Partial<StoredCalibration>) {
-  const id = tracker.cameraId;
-  saveCalibration(id, { ...loadCalibration(id), ...patch });
-}
-
 $('start').addEventListener('click', () =>
   startCamera().catch((e) => (status.textContent = String(e))),
 );
 cameraSelect.addEventListener('change', () =>
   startCamera(cameraSelect.value).catch((e) => (status.textContent = String(e))),
 );
-$('mirror').addEventListener('change', (e) =>
-  $('videoWrap').classList.toggle('mirror', (e.target as HTMLInputElement).checked),
-);
+const mirrorInput = $<HTMLInputElement>('mirror');
+mirrorInput.addEventListener('change', () => $('videoWrap').classList.toggle('mirror', mirrorInput.checked));
 $('videoWrap').classList.add('mirror');
 refineInput.addEventListener('change', () => (tracker.refineRotation = refineInput.checked));
 depthMethodInput.addEventListener('change', () => {
   tracker.depthMethod = depthMethodInput.value as DepthMethod;
 });
 
-fovInput.addEventListener('change', () => {
-  const k = tracker.intrinsics;
-  const fov = parseFloat(fovInput.value);
-  if (!k || !(fov > 0)) return;
-  tracker.intrinsics = intrinsicsFromFov(k.width, k.height, fov);
-  persist({ focalOverWidth: tracker.intrinsics.fx / k.width });
+/** Reflect calibration state in the panel and the 3D view. */
+function renderCalibration(s: CalibrationStatus) {
+  if (s.focal.hfovDegrees !== null) fovInput.value = s.focal.hfovDegrees.toFixed(1);
+  const views = s.focal.views;
+  $('focalViews').textContent = views.length
+    ? `${views.length} view(s): ${views.map((v) => v.toFixed(0)).join(', ')} px`
+    : '';
+  const sides = (['Left', 'Right'] as const).filter((side) => s.skeleton[side]);
+  $('bonesState').textContent = sides.length ? `Calibrated: ${sides.join(', ')}` : 'Not calibrated';
   updateFrustum();
-});
+}
+cal.onChange(renderCalibration);
 
-async function calibrate(button: string, run: (samples: Hand3D[]) => string) {
-  const el = $<HTMLButtonElement>(button);
-  el.disabled = true;
-  status.textContent = 'Hold still…';
+/** Run a calibration step with its button disabled, reporting the outcome in the status line. */
+async function runStep(button: HTMLButtonElement, hint: string, step: () => Promise<string>) {
+  button.disabled = true;
+  status.textContent = hint;
   try {
-    status.textContent = run(await collectSamples((l) => tracker.onFrame(l)));
+    status.textContent = await step();
   } catch (e) {
-    status.textContent = String(e instanceof Error ? e.message : e);
+    status.textContent = e instanceof Error ? e.message : String(e);
   } finally {
-    el.disabled = false;
+    button.disabled = false;
   }
 }
 
-function setFocal(f: number) {
-  const k = tracker.intrinsics!;
-  tracker.intrinsics = { ...k, fx: f, fy: f };
-  persist({ focalOverWidth: f / k.width });
-  fovInput.value = fovFromIntrinsics(tracker.intrinsics).toFixed(1);
-  updateFrustum();
-}
+fovInput.addEventListener('change', () => {
+  const fov = parseFloat(fovInput.value);
+  if (fov > 0) cal.setFieldOfView(fov);
+});
 
 // --- Step 1: hand size, from a gripped object of known length or a measured hand ---
 const scaleRef = $<HTMLSelectElement>('scaleRef');
@@ -293,28 +279,14 @@ function updateScaleUi() {
 scaleRef.addEventListener('change', updateScaleUi);
 updateScaleUi();
 
-$('calScale').addEventListener('click', () =>
-  calibrate('calScale', (samples) => {
-    const known = KNOWN_LENGTHS.find((o) => o.id === scaleRef.value);
-    const scale = known
-      ? handScaleFromGrip(known.length, samples)
-      : handScaleFromLength(parseFloat($<HTMLInputElement>('handLength').value) / 100, samples);
-    if (!Number.isFinite(scale)) throw new Error('Calibration failed');
-    // Bone lengths carry the overall size too; rescale them to match.
-    const ratio = scale / tracker.handScale;
-    const stored: StoredCalibration['skeletons'] = {};
-    for (const side of ['Left', 'Right'] as const) {
-      const skeleton = tracker.skeletons[side];
-      if (!skeleton) continue;
-      stored[side] = {
-        lengths: Array.from(skeleton.lengths, (l) => l * ratio),
-        palm: Array.from(skeleton.palm, (v) => v * ratio),
-      };
-      tracker.skeletons[side] = stored[side];
-    }
-    tracker.handScale = scale;
-    persist({ handScale: scale, skeletons: stored });
-    return `Hand scale ${scale.toFixed(3)} from ${samples.length} frames`;
+const calScale = $<HTMLButtonElement>('calScale');
+calScale.addEventListener('click', () =>
+  runStep(calScale, 'Hold still…', async () => {
+    const scale =
+      scaleRef.value === 'hand'
+        ? await cal.handSizeFromLength(parseFloat($<HTMLInputElement>('handLength').value) / 100)
+        : await cal.handSizeFromObject(scaleRef.value);
+    return `Hand scale ${scale.toFixed(3)}`;
   }),
 );
 
@@ -325,156 +297,55 @@ focalRef.append(
   new Option('Hand at a measured distance', 'distance'),
 );
 focalRef.value = 'a4';
-const calFocalButton = $<HTMLButtonElement>('calFocal');
-const cancelFreezeButton = $<HTMLButtonElement>('cancelFreeze');
-let focalViews: number[] = [];
+const calFocal = $<HTMLButtonElement>('calFocal');
 function updateFocalUi() {
   const distance = focalRef.value === 'distance';
   $('distanceRow').hidden = !distance;
   $('focalHint').textContent = distance
     ? 'Needs step 1 first. Hold the hand centred in view at the measured distance.'
     : 'Hold the object tilted about 45° away from the camera, as large as possible in view. ' +
-      'Freeze, then click its 4 corners in order around the edge. Paper is much more ' +
-      'accurate than a card; add several views.';
-  calFocalButton.textContent = distance ? 'Calibrate distance' : 'Freeze & click corners';
-  focalViews = [];
-  $('focalViews').textContent = '';
+      'Freeze, then click its 4 corners in order around the edge (Esc cancels). Paper is much ' +
+      'more accurate than a card; add several views.';
+  calFocal.textContent = distance ? 'Calibrate distance' : 'Freeze & click corners';
+  cal.clearRectangleViews();
 }
 focalRef.addEventListener('change', updateFocalUi);
 updateFocalUi();
 
-/** Frozen frame being annotated, with the corners clicked so far (image pixels). */
-let freeze: { clicks: number[] } | null = null;
-
-function drawFreeze() {
-  if (!freeze) return;
-  overlay.width = video.videoWidth;
-  overlay.height = video.videoHeight;
-  ctx.drawImage(frozenFrame, 0, 0);
-  const c = freeze.clicks;
-  const r = Math.max(3, overlay.width / 200);
-  ctx.strokeStyle = ctx.fillStyle = '#ffd23f';
-  ctx.lineWidth = r / 2;
-  ctx.beginPath();
-  for (let i = 0; i < c.length; i += 2) (i ? ctx.lineTo : ctx.moveTo).call(ctx, c[i], c[i + 1]);
-  ctx.stroke();
-  for (let i = 0; i < c.length; i += 2) {
-    ctx.beginPath();
-    ctx.arc(c[i], c[i + 1], r, 0, Math.PI * 2);
-    ctx.fill();
-  }
-}
-const frozenFrame = document.createElement('canvas');
-
-function endFreeze() {
-  freeze = null;
-  $('videoWrap').classList.remove('frozen');
-  calFocalButton.disabled = false;
-  cancelFreezeButton.hidden = true;
-}
-
-calFocalButton.addEventListener('click', () => {
+calFocal.addEventListener('click', () => {
   if (focalRef.value === 'distance') {
-    calibrate('calFocal', (samples) => {
-      const distance = parseFloat($<HTMLInputElement>('distance').value) / 100;
-      const f = focalFromDistance(tracker.intrinsics!.fx, distance, samples);
-      if (!Number.isFinite(f)) throw new Error('Calibration failed');
-      setFocal(f);
-      return `Focal ${f.toFixed(0)} px (FOV ${fovInput.value}°) from ${samples.length} frames`;
+    runStep(calFocal, 'Hold still…', async () => {
+      const f = await cal.focalFromDistance(parseFloat($<HTMLInputElement>('distance').value) / 100);
+      return `Focal ${f.toFixed(0)} px (FOV ${fovInput.value}°)`;
     });
     return;
   }
-  if (!video.videoWidth) return;
-  frozenFrame.width = video.videoWidth;
-  frozenFrame.height = video.videoHeight;
-  frozenFrame.getContext('2d')!.drawImage(video, 0, 0);
-  freeze = { clicks: [] };
-  $('videoWrap').classList.add('frozen');
-  calFocalButton.disabled = true;
-  cancelFreezeButton.hidden = false;
-  status.textContent = 'Click the 4 corners in order around the edge';
-  drawFreeze();
-});
-cancelFreezeButton.addEventListener('click', () => {
-  endFreeze();
-  status.textContent = 'Cancelled';
+  runStep(calFocal, 'Click the 4 corners in order around the edge', async () => {
+    const corners = await pickCorners(video, { mirrored: mirrorInput.checked });
+    const f = cal.addRectangleView(corners, focalRef.value);
+    return `Focal ${f.toFixed(0)} px (FOV ${fovInput.value}°). Add more views to average.`;
+  });
 });
 
-overlay.addEventListener('click', (e) => {
-  if (!freeze) return;
-  // Map the click to image pixels: undo object-fit: contain and the CSS mirror.
-  const rect = overlay.getBoundingClientRect();
-  const scale = Math.min(rect.width / overlay.width, rect.height / overlay.height);
-  let x = e.clientX - rect.left;
-  if ($('videoWrap').classList.contains('mirror')) x = rect.width - x;
-  const u = (x - (rect.width - overlay.width * scale) / 2) / scale;
-  const v = (e.clientY - rect.top - (rect.height - overlay.height * scale) / 2) / scale;
-  freeze.clicks.push(u, v);
-  drawFreeze();
-  if (freeze.clicks.length < 8) return;
-
-  const object = KNOWN_RECTANGLES.find((o) => o.id === focalRef.value)!;
-  const k = tracker.intrinsics!;
-  const f = focalFromRectangle(freeze.clicks, object, k.cx, k.cy);
-  endFreeze();
-  if (f === null) {
-    status.textContent = 'Could not use that view — tilt the object more and try again';
-    return;
-  }
-  focalViews.push(f);
-  const sorted = [...focalViews].sort((a, b) => a - b);
-  const median = sorted[sorted.length >> 1];
-  setFocal(median);
-  $('focalViews').textContent =
-    `${focalViews.length} view(s): ${focalViews.map((v) => v.toFixed(0)).join(', ')} px`;
-  status.textContent = `Focal ${median.toFixed(0)} px (FOV ${fovInput.value}°). Add more views to average.`;
-});
-
-// --- Step 3: bone lengths ---
-function updateBonesState() {
-  const sides = (['Left', 'Right'] as const).filter((s) => tracker.skeletons[s]);
-  $('bonesState').textContent = sides.length ? `Calibrated: ${sides.join(', ')}` : 'Not calibrated';
-}
-
-$('calBones').addEventListener('click', async () => {
-  const button = $<HTMLButtonElement>('calBones');
-  const k = tracker.intrinsics;
-  if (!k) return;
-  button.disabled = true;
-  status.textContent = 'Turn both hands slowly in every direction…';
-  try {
-    const samples = await collectHands((l) => tracker.onFrame(l), 8000);
-    const result = calibrateHandsBoneLengths(samples, k, tracker.handScale);
-    const sides = (['Left', 'Right'] as const).filter((s) => result[s]);
-    if (!sides.length) throw new Error('Not enough frames of either hand; try again');
-    const stored: StoredCalibration['skeletons'] = { ...loadCalibration(tracker.cameraId).skeletons };
-    for (const side of sides) {
-      const { lengths, palm } = result[side]!;
-      stored[side] = { lengths: Array.from(lengths), palm: Array.from(palm) };
-      tracker.skeletons[side] = stored[side];
-    }
-    persist({ skeletons: stored });
-    const mm = sides.map((s) => `${s} ${(result[s]!.lengths.reduce((a, b) => a + b, 0) * 1000).toFixed(0)} mm`);
-    status.textContent = `Bone lengths calibrated (total: ${mm.join(', ')})`;
-  } catch (e) {
-    status.textContent = String(e instanceof Error ? e.message : e);
-  } finally {
-    button.disabled = false;
-    updateBonesState();
-  }
-});
+// --- Step 3: hand skeleton ---
+const calBones = $<HTMLButtonElement>('calBones');
+calBones.addEventListener('click', () =>
+  runStep(calBones, 'Turn both hands slowly in every direction…', async () => {
+    const result = await cal.skeleton({
+      onProgress: ({ elapsedMs, durationMs, frames }) => {
+        status.textContent =
+          `Turn both hands slowly in every direction… ${Math.ceil((durationMs - elapsedMs) / 1000)} s ` +
+          `(left ${frames.Left}, right ${frames.Right} frames)`;
+      },
+    });
+    const totals = (['Left', 'Right'] as const)
+      .filter((side) => result[side])
+      .map((side) => `${side} ${(result[side]!.lengths.reduce((a, b) => a + b, 0) * 1000).toFixed(0)} mm`);
+    return `Skeleton calibrated (bone totals: ${totals.join(', ')})`;
+  }),
+);
 
 $('calReset').addEventListener('click', () => {
-  const k = tracker.intrinsics;
-  if (!k) return;
-  saveCalibration(tracker.cameraId, {});
-  tracker.handScale = 1;
-  tracker.skeletons = {};
-  updateBonesState();
-  tracker.intrinsics = intrinsicsFromFov(k.width, k.height);
-  fovInput.value = fovFromIntrinsics(tracker.intrinsics).toFixed(1);
-  focalViews = [];
-  $('focalViews').textContent = '';
-  updateFrustum();
+  cal.reset();
   status.textContent = 'Calibration reset';
 });

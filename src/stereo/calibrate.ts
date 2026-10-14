@@ -8,6 +8,8 @@ import {
   refineRelativePose,
   sampsonDistance,
   triangulate,
+  triangulateLinear,
+  type RelativePose,
 } from './epipolar';
 import { groupByFrame, interpolateLandmarks, type TimedHands } from './pairing';
 
@@ -59,7 +61,12 @@ export class StereoCalibrationError extends Error {
  * Self-calibrate a camera pair from a hand moving in front of both, using the
  * 21 landmarks per frame as correspondences:
  *   1. time offset: for candidate offsets, pair frames (interpolating camera 1)
- *      and keep the offset whose robust essential matrix fits best;
+ *      and keep the offset whose robust essential matrix fits best; then refine
+ *      it by hand-size constancy. A timing error shifts camera 1's points along
+ *      the hand's motion; where that is along the epipolar lines the epipolar
+ *      fit can't see it, but it changes the triangulated depth, so the
+ *      triangulated hand appears to grow and shrink as it moves. The offset
+ *      that keeps its size most constant wins;
  *   2. relative pose: RANSAC 8-point essential matrix → decomposition →
  *      Levenberg–Marquardt on Sampson distances;
  *   3. metric scale: triangulated (unit-baseline) bone lengths vs. the hand's
@@ -87,12 +94,31 @@ export function calibrateStereo(input: StereoCalibrationInput, options: StereoCa
     const s = score(o, 120);
     if (s.cost < best.cost) best = s;
   }
-  for (let o = best.offset - 8; o <= best.offset + 8; o += 2) {
-    const s = score(o, 200);
-    if (s.cost < best.cost) best = s;
-  }
   if (!Number.isFinite(best.cost)) {
     throw new StereoCalibrationError('too-few-frames', 'Not enough frames with the hand visible in both cameras');
+  }
+  {
+    const c = correspondences(frames0, frames1, input.k0, input.k1, best.offset, 3000, random);
+    const fit = ransacEssential(c.x0, c.x1, { iterations: 300, threshold, random, groups: c.groups });
+    if (fit) {
+      const start = decomposeEssential(fit.E, c.x0, c.x1, fit.inliers);
+      let bestSpread = Infinity;
+      const centre = best.offset;
+      for (let o = centre - 60; o <= centre + 60; o += 4) {
+        const spread = sizeSpread(frames0, frames1, input.k0, input.k1, o, start);
+        if (spread < bestSpread) {
+          bestSpread = spread;
+          best = { offset: o, cost: best.cost };
+        }
+      }
+      for (let o = best.offset - 3; o <= best.offset + 3; o += 1) {
+        const spread = sizeSpread(frames0, frames1, input.k0, input.k1, o, start);
+        if (spread < bestSpread) {
+          bestSpread = spread;
+          best = { offset: o, cost: best.cost };
+        }
+      }
+    }
   }
 
   // 2. Relative pose at the best offset.
@@ -146,6 +172,46 @@ export function calibrateStereo(input: StereoCalibrationInput, options: StereoCa
 }
 
 /**
+ * Robust spread (median absolute deviation of the log) of the triangulated
+ * hand size over frames, with the pose refined at this time offset. Small when
+ * the offset is right.
+ */
+function sizeSpread(
+  frames0: TimedHands[],
+  frames1: TimedHands[],
+  k0: Intrinsics,
+  k1: Intrinsics,
+  offsetMs: number,
+  start: RelativePose,
+): number {
+  const c = correspondences(frames0, frames1, k0, k1, offsetMs, 3000);
+  if (c.n < 100) return Infinity;
+  const all = Array.from({ length: c.n }, (_, i) => i);
+  const pose = refineRelativePose(start, c.x0, c.x1, all, 8);
+  const logSizes: number[] = [];
+  for (const frame of c.frames) {
+    const joints: (Float64Array | null)[] = [];
+    for (let j = 0; j < NUM_JOINTS; j++) {
+      const i = frame.offset + j;
+      joints.push(triangulateLinear(pose.R, pose.t, c.x0[i * 2], c.x0[i * 2 + 1], c.x1[i * 2], c.x1[i * 2 + 1]));
+    }
+    let size = 0;
+    for (let j = 1; j < NUM_JOINTS; j++) {
+      const a = joints[j], b = joints[JOINT_PARENTS[j]];
+      if (!a || !b) {
+        size = NaN;
+        break;
+      }
+      size += Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+    }
+    if (size > 0) logSizes.push(Math.log(size));
+  }
+  if (logSizes.length < 20) return Infinity;
+  const m = median(logSizes);
+  return median(logSizes.map((v) => Math.abs(v - m)));
+}
+
+/**
  * Normalised correspondences between camera 0 frames and camera 1 landmarks
  * interpolated to the same instant (camera 1 time = camera 0 time − offset).
  * At most `limit` correspondences, sampled by whole frames.
@@ -157,7 +223,7 @@ function correspondences(
   k1: Intrinsics,
   offsetMs: number,
   limit: number,
-  random: () => number,
+  random?: () => number,
 ) {
   const pairs: { a: Float32Array; b: Float32Array; handedness: Handedness }[] = [];
   for (const frame of frames0) {
@@ -170,13 +236,16 @@ function correspondences(
   }
   const maxFrames = Math.floor(limit / NUM_JOINTS);
   let chosen = pairs;
-  if (pairs.length > maxFrames) {
+  if (pairs.length > maxFrames && random) {
     chosen = [...pairs];
     for (let i = chosen.length - 1; i > 0; i--) {
       const j = Math.floor(random() * (i + 1));
       [chosen[i], chosen[j]] = [chosen[j], chosen[i]];
     }
     chosen = chosen.slice(0, maxFrames);
+  } else if (pairs.length > maxFrames) {
+    // Deterministic, evenly spaced (so costs at different offsets are comparable).
+    chosen = Array.from({ length: maxFrames }, (_, i) => pairs[Math.floor((i * pairs.length) / maxFrames)]);
   }
   const n = chosen.length * NUM_JOINTS;
   const x0 = new Float64Array(n * 2), x1 = new Float64Array(n * 2), groups = new Int32Array(n);

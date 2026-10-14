@@ -218,6 +218,20 @@ export class Calibrator {
     return result;
   }
 
+  // ---------- set measured values (e.g. from a multi-camera tracker) ----------
+
+  /** Set the hand scale directly (rescales any skeletons to match) and save it. */
+  setHandScale(scale: number): void {
+    this.applyHandScale(scale);
+  }
+
+  /** Set one hand's skeleton directly (e.g. measured by triangulation) and save it. */
+  setSkeleton(side: Handedness, skeleton: { lengths: ArrayLike<number>; palm: ArrayLike<number> }): void {
+    const stored = { lengths: Array.from(skeleton.lengths), palm: Array.from(skeleton.palm) };
+    this.tracker.skeletons[side] = stored;
+    this.save({ skeletons: { ...this.sync().skeletons, [side]: stored } });
+  }
+
   // ---------- all ----------
 
   /** Forget all calibration for this camera and return the tracker to defaults. */

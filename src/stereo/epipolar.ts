@@ -245,48 +245,72 @@ export function triangulateLinear(
   return Float64Array.of(X[0] / X[3], X[1] / X[3], X[2] / X[3]);
 }
 
+/** One view's observation of a point: camera pose (X_view = R·X0 + t), normalised image point, focal length. */
+export interface ViewObservation {
+  R: ArrayLike<number>;
+  t: ArrayLike<number>;
+  x: number;
+  y: number;
+  /** Focal length in pixels, to weight the reprojection error in pixels. */
+  f: number;
+}
+
+const IDENTITY3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+const ZERO3 = [0, 0, 0];
+
 /**
- * Triangulate one correspondence and refine it by Gauss–Newton on the
- * reprojection error in both views, weighted by each view's focal length so
- * the error is in pixels. Returns the point (camera 0) and its RMS pixel error.
+ * Triangulate a point seen in any number (≥ 2) of views: linear DLT, then
+ * Gauss–Newton on the pixel reprojection error. Returns the point (camera-0
+ * coordinates), the RMS pixel error per view, and each view's pixel error.
  */
-export function triangulate(
-  R: ArrayLike<number>,
-  t: ArrayLike<number>,
-  a: number,
-  b: number,
-  c: number,
-  d: number,
-  f0 = 1,
-  f1 = 1,
-): { X: Float64Array; error: number } | null {
-  const X = triangulateLinear(R, t, a, b, c, d);
-  if (!X) return null;
+export function triangulateViews(
+  views: ViewObservation[],
+): { X: Float64Array; error: number; perView: Float64Array } | null {
+  if (views.length < 2) return null;
+  const AtA = new Float64Array(16);
+  for (const v of views) {
+    const { R, t, x, y } = v;
+    const rows = [
+      [x * R[6] - R[0], x * R[7] - R[1], x * R[8] - R[2], x * t[2] - t[0]],
+      [y * R[6] - R[3], y * R[7] - R[4], y * R[8] - R[5], y * t[2] - t[1]],
+    ];
+    for (const row of rows) for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) AtA[i * 4 + j] += row[i] * row[j];
+  }
+  const H4 = smallestEigenvector(AtA, 4);
+  if (Math.abs(H4[3]) < 1e-12) return null;
+  const X = Float64Array.of(H4[0] / H4[3], H4[1] / H4[3], H4[2] / H4[3]);
+  const m = views.length * 2;
   const residual = (P: ArrayLike<number>, out?: Float64Array) => {
-    const y0 = P[0] / P[2], y1 = P[1] / P[2];
-    const Q0 = R[0] * P[0] + R[1] * P[1] + R[2] * P[2] + t[0];
-    const Q1 = R[3] * P[0] + R[4] * P[1] + R[5] * P[2] + t[1];
-    const Q2 = R[6] * P[0] + R[7] * P[1] + R[8] * P[2] + t[2];
-    const r = [f0 * (y0 - a), f0 * (y1 - b), f1 * (Q0 / Q2 - c), f1 * (Q1 / Q2 - d)];
-    out?.set(r);
-    return r.reduce((s, v) => s + v * v, 0);
+    let ss = 0;
+    views.forEach((v, k) => {
+      const { R, t } = v;
+      const Q0 = R[0] * P[0] + R[1] * P[1] + R[2] * P[2] + t[0];
+      const Q1 = R[3] * P[0] + R[4] * P[1] + R[5] * P[2] + t[1];
+      const Q2 = R[6] * P[0] + R[7] * P[1] + R[8] * P[2] + t[2];
+      const ru = v.f * (Q0 / Q2 - v.x), rv = v.f * (Q1 / Q2 - v.y);
+      if (out) {
+        out[k * 2] = ru;
+        out[k * 2 + 1] = rv;
+      }
+      ss += ru * ru + rv * rv;
+    });
+    return ss;
   };
-  const r = new Float64Array(4);
-  const rh = new Float64Array(4);
+  const r = new Float64Array(m);
+  const rh = new Float64Array(m);
   for (let iter = 0; iter < 5; iter++) {
-    if (X[2] <= 0) break;
     const cost = residual(X, r);
-    const J = new Float64Array(12);
+    const J = new Float64Array(m * 3);
     for (let j = 0; j < 3; j++) {
       const Xh = Float64Array.from(X);
       const h = 1e-7 * Math.max(1, Math.abs(X[2]));
       Xh[j] += h;
       residual(Xh, rh);
-      for (let k = 0; k < 4; k++) J[k * 3 + j] = (rh[k] - r[k]) / h;
+      for (let k = 0; k < m; k++) J[k * 3 + j] = (rh[k] - r[k]) / h;
     }
     const H = new Float64Array(9);
     const g = new Float64Array(3);
-    for (let k = 0; k < 4; k++)
+    for (let k = 0; k < m; k++)
       for (let i = 0; i < 3; i++) {
         g[i] -= J[k * 3 + i] * r[k];
         for (let j = 0; j < 3; j++) H[i * 3 + j] += J[k * 3 + i] * J[k * 3 + j];
@@ -298,7 +322,30 @@ export function triangulate(
     if (residual(next) >= cost) break;
     X.set(next);
   }
-  return { X, error: Math.sqrt(residual(X) / 2) };
+  residual(X, r);
+  const perView = Float64Array.from(views, (_, k) => Math.hypot(r[k * 2], r[k * 2 + 1]));
+  const error = Math.sqrt(perView.reduce((s, e) => s + e * e, 0) / views.length);
+  return { X, error, perView };
+}
+
+/**
+ * Two-view triangulation (camera 0 and a camera at R, t), refined in pixels.
+ * Returns the point (camera 0) and its RMS pixel error per view.
+ */
+export function triangulate(
+  R: ArrayLike<number>,
+  t: ArrayLike<number>,
+  a: number,
+  b: number,
+  c: number,
+  d: number,
+  f0 = 1,
+  f1 = 1,
+): { X: Float64Array; error: number } | null {
+  return triangulateViews([
+    { R: IDENTITY3, t: ZERO3, x: a, y: b, f: f0 },
+    { R, t, x: c, y: d, f: f1 },
+  ]);
 }
 
 function normalize(v: ArrayLike<number>): Float64Array {

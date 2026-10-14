@@ -44,8 +44,13 @@ export interface Hand3D {
     center?: Float32Array;
     /** RMS reprojection error of `joints` against `landmarks2d`, in pixels. */
     reprojectionError?: number;
-    /** Multi-camera backends: which view(s) produced `joints`. */
-    source?: 'stereo' | 'view0' | 'view1';
+    /**
+     * Multi-camera backends: 'stereo' if `joints` were triangulated from two or
+     * more cameras, else 'view<i>' for the single camera they came from.
+     */
+    source?: string;
+    /** Multi-camera backends: indices of the cameras used. */
+    views?: number[];
   };
 }
 

@@ -1,23 +1,17 @@
 import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
 import { onVideoFrame, openCamera, type CameraHandle } from '../camera';
 import { Calibrator } from '../calibration/calibrator';
-import { OneEuroFilter, type OneEuroOptions } from '../filter/oneEuro';
-import { retarget, translationFromBones } from '../geometry/bones';
-import { placeSkeleton } from '../geometry/skeleton';
-import { reprojectionError, solvePose, transformPoints, type Pose } from '../geometry/solvePose';
+import type { OneEuroOptions } from '../filter/oneEuro';
 import {
   intrinsicsFromCalibration,
   loadCalibration,
   scaleIntrinsics,
   type Intrinsics,
 } from '../intrinsics';
-import {
-  NUM_JOINTS,
-  type Hand3D,
-  type HandFrameListener,
-  type HandTrackerBackend,
-  type Handedness,
-} from '../types';
+import type { HandFrameListener, HandTrackerBackend } from '../types';
+import { HandAssembler, detectionsFromResult, type DepthMethod, type SkeletonsByHand } from './assemble';
+
+export type { DepthMethod, SkeletonsByHand } from './assemble';
 
 const MEDIAPIPE_VERSION = '1.1.0';
 export const DEFAULT_WASM_PATH = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MEDIAPIPE_VERSION}/wasm`;
@@ -58,11 +52,6 @@ export interface MonocularOptions {
   modelAssetPath?: string;
 }
 
-export type DepthMethod = 'skeleton' | 'pnp' | 'bones';
-export type SkeletonsByHand = Partial<
-  Record<Handedness, { lengths: ArrayLike<number>; palm: ArrayLike<number> }>
->;
-
 /**
  * Single-camera 3D hands: MediaPipe gives each hand's metric shape (world
  * landmarks, origin at the hand centre) and its 2D image landmarks; a
@@ -80,7 +69,7 @@ export class MonocularHandTracker implements HandTrackerBackend {
 
   private readonly options: MonocularOptions;
   private readonly listeners = new Set<HandFrameListener>();
-  private readonly filters = new Map<Handedness, OneEuroFilter>();
+  private readonly assembler: HandAssembler;
   private landmarker: HandLandmarker | null = null;
   private video: HTMLVideoElement | null = null;
   private stopLoop: (() => void) | null = null;
@@ -94,6 +83,7 @@ export class MonocularHandTracker implements HandTrackerBackend {
     this.refineRotation = options.refineRotation ?? false;
     this.depthMethod = options.depthMethod ?? 'skeleton';
     this.skeletons = options.skeletons ?? {};
+    this.assembler = new HandAssembler(options.smoothing);
   }
 
   /** Calibration steps for this tracker; results are applied and saved per camera. */
@@ -150,7 +140,7 @@ export class MonocularHandTracker implements HandTrackerBackend {
     this.stopLoop = null;
     this.camera?.stop();
     this.camera = null;
-    this.filters.clear();
+    this.assembler.reset();
   }
 
   /** Release the MediaPipe model as well. */
@@ -171,85 +161,13 @@ export class MonocularHandTracker implements HandTrackerBackend {
     if (this.intrinsics.width !== width || this.intrinsics.height !== height) {
       this.intrinsics = scaleIntrinsics(this.intrinsics, width, height);
     }
-    const k = this.intrinsics;
     const result = this.landmarker.detectForVideo(video, timestamp);
-
-    const hands: Hand3D[] = [];
-    const seen = new Set<Handedness>();
-    for (let h = 0; h < result.landmarks.length; h++) {
-      const image = new Float32Array(NUM_JOINTS * 2);
-      const world = new Float32Array(NUM_JOINTS * 3);
-      result.landmarks[h].forEach((p, i) => {
-        image[i * 2] = p.x * width;
-        image[i * 2 + 1] = p.y * height;
-      });
-      result.worldLandmarks[h].forEach((p, i) => {
-        world[i * 3] = p.x;
-        world[i * 3 + 1] = p.y;
-        world[i * 3 + 2] = p.z;
-      });
-      // MediaPipe's label is correct for unmirrored camera frames (verified in the demo).
-      const category = result.handedness[h]?.[0];
-      let handedness: Handedness = category?.categoryName === 'Left' ? 'Left' : 'Right';
-      if (this.options.mirroredInput) handedness = handedness === 'Left' ? 'Right' : 'Left';
-
-      const { joints, center, reprojectionError } = this.placeHand(
-        world,
-        image,
-        k,
-        this.skeletons[handedness],
-      );
-
-      if (this.options.smoothing !== false && !seen.has(handedness)) {
-        let filter = this.filters.get(handedness);
-        if (!filter) {
-          filter = new OneEuroFilter(this.options.smoothing ?? { minCutoff: 1.5, beta: 5 });
-          this.filters.set(handedness, filter);
-        }
-        filter.filter(joints, timestamp);
-      }
-      seen.add(handedness);
-
-      hands.push({
-        handedness,
-        joints,
-        confidence: category?.score ?? 0,
-        timestamp,
-        debug: {
-          landmarks2d: image,
-          worldLandmarks: world,
-          center: Float32Array.from(center),
-          reprojectionError,
-        },
-      });
-    }
-    for (const key of this.filters.keys()) if (!seen.has(key)) this.filters.get(key)!.reset();
+    const hands = this.assembler.assemble(
+      detectionsFromResult(result, width, height, this.options.mirroredInput),
+      timestamp,
+      this.intrinsics,
+      this,
+    );
     for (const listener of this.listeners) listener(hands, timestamp);
-  }
-
-  private placeHand(
-    world: Float32Array,
-    image: Float32Array,
-    k: Intrinsics,
-    skeleton: SkeletonsByHand[Handedness],
-  ): { joints: Float32Array; center: ArrayLike<number>; reprojectionError: number } {
-    if (skeleton && this.depthMethod === 'skeleton') {
-      return placeSkeleton(world, image, k, skeleton.lengths, skeleton.palm);
-    }
-    const model = skeleton ? retarget(world, skeleton.lengths) : world.map((v) => v * this.handScale);
-    let pose: Pose | null = null;
-    if (this.depthMethod === 'bones') {
-      const translation = translationFromBones(model, image, k);
-      if (translation) {
-        const p = { rotation: Float64Array.of(1, 0, 0, 0, 1, 0, 0, 0, 1), translation };
-        pose = { ...p, reprojectionError: reprojectionError(model, image, k, p) };
-      }
-    }
-    pose ??= solvePose(model, image, k, { refineRotation: this.refineRotation });
-    return {
-      joints: transformPoints(model, pose),
-      center: pose.translation,
-      reprojectionError: pose.reprojectionError,
-    };
   }
 }

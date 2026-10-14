@@ -106,13 +106,20 @@ export function palmTemplateFromMediaPipe(frames: Hand3D[]): Float64Array {
     const nx = ay * bz - az * by, ny = az * bx - ax * bz, nz = ax * by - ay * bx;
     return Math.abs(nz) / Math.hypot(nx, ny, nz) > Math.cos((35 * Math.PI) / 180);
   });
-  const use = facing.length >= 10 ? facing : palms;
-  let reference = centre(use[0]);
+  return medianPalmShape(facing.length >= 10 ? facing : palms);
+}
+
+/**
+ * Median shape of several 5 × 3 palms (any position and orientation): each is
+ * centred and rotated onto a reference (Kabsch), then the per-coordinate
+ * median is taken. Result centred at its centroid.
+ */
+export function medianPalmShape(palms: ArrayLike<number>[]): Float64Array {
+  let reference = centre(palms[0]);
   for (let pass = 0; pass < 2; pass++) {
-    const aligned = use.map((p) => {
+    const aligned = palms.map((p) => {
       const c = centre(p);
-      const R = kabsch(c, reference);
-      return rotate(R, c);
+      return rotate(kabsch(c, reference), c);
     });
     reference = Float64Array.from({ length: 15 }, (_, i) => median(aligned.map((a) => a[i])));
   }

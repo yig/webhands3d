@@ -26,7 +26,7 @@ const scene3d = createHandScene($<HTMLDivElement>('scene'));
 function updateCameras() {
   const [k0, k1] = [views[0].intrinsics, views[1].intrinsics];
   if (!k0) return;
-  const cal = stereo.calibration;
+  const cal = stereo.calibrations[1];
   scene3d.setCameras(
     cal && k1 ? [{ k: k0 }, { k: k1, R: cal.R, t: cal.t, color: 0xc08a5a }] : [{ k: k0 }],
   );
@@ -49,7 +49,7 @@ const fps = fpsCounter();
 stereo.onFrame((hands) => {
   scene3d.updateHands(hands);
   const [k0, k1] = [views[0].intrinsics, views[1].intrinsics];
-  const cal = stereo.calibration;
+  const cal = stereo.calibrations[1];
   if (k0) {
     drawHandOverlay(
       overlays[0],
@@ -162,7 +162,7 @@ handSizeButton.addEventListener('click', () =>
 const calStereoButton = $<HTMLButtonElement>('calStereo');
 calStereoButton.addEventListener('click', () =>
   runStep(calStereoButton, 'Move one hand through the shared view…', async () => {
-    const cal = await stereo.calibrate({
+    const result = await stereo.calibrate({
       onProgress: ({ elapsedMs, durationMs, frames }) => {
         status.textContent =
           `Move one hand through the shared view… ${Math.ceil((durationMs - elapsedMs) / 1000)} s ` +
@@ -170,6 +170,8 @@ calStereoButton.addEventListener('click', () =>
       },
     });
     updateCameras();
+    const cal = result.views[1];
+    if (!cal || cal instanceof Error) throw cal ?? new Error('Calibration failed');
     return `Camera pair calibrated: baseline ${(Math.hypot(...cal.t) * 100).toFixed(1)} cm`;
   }),
 );

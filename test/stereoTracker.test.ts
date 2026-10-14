@@ -43,7 +43,7 @@ function run(tracker: StereoHandTracker, s0: FakeSource, s1: FakeSource, duratio
 describe('StereoHandTracker', () => {
   it('triangulates joints to millimetres when both cameras see the hand', async () => {
     const s0 = new FakeSource(K0, 'a'), s1 = new FakeSource(K1, 'b');
-    const tracker = new StereoHandTracker([s0, s1], { calibration, smoothing: false });
+    const tracker = new StereoHandTracker([s0, s1], { calibrations: [null, calibration], smoothing: false, refineSkeleton: false });
     await tracker.start();
     const out = run(tracker, s0, s1, 3000);
     const stereo = out.filter((h) => h.debug?.source === 'stereo');
@@ -60,7 +60,7 @@ describe('StereoHandTracker', () => {
 
   it('falls back to camera 0 alone when camera 1 sends nothing', async () => {
     const s0 = new FakeSource(K0, 'a'), s1 = new FakeSource(K1, 'b');
-    const tracker = new StereoHandTracker([s0, s1], { calibration, smoothing: false });
+    const tracker = new StereoHandTracker([s0, s1], { calibrations: [null, calibration], smoothing: false });
     await tracker.start();
     const out = run(tracker, s0, s1, 1000, true);
     expect(out.length).toBeGreaterThan(25);
@@ -71,7 +71,7 @@ describe('StereoHandTracker', () => {
     const s0 = new FakeSource(K0, 'a'), s1 = new FakeSource(K1, 'b');
     const tracker = new StereoHandTracker([s0, s1], { smoothing: false });
     await tracker.start();
-    expect(tracker.status.calibrated).toBe(false);
+    expect(tracker.status.views[1].calibrated).toBe(false);
     const out = run(tracker, s0, s1, 500);
     expect(out.length).toBeGreaterThan(10);
     expect(out.every((h) => h.debug?.source === 'view0')).toBe(true);

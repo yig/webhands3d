@@ -46,6 +46,7 @@ export { kabsch } from './geometry/rigid';
 export {
   calibrateHandSkeleton,
   palmTemplateFromMediaPipe,
+  medianPalmShape,
   type HandSkeleton,
   calibrateBoneLengths,
   calibrateHandsBoneLengths,
@@ -64,12 +65,23 @@ export {
 } from './calibration/calibrator';
 export { pickCorners, type PickCornersOptions } from './ui/pickCorners';
 export {
-  StereoHandTracker,
+  MultiViewHandTracker,
   toCamera0,
-  type StereoOptions,
-  type StereoSource,
-  type StereoStatus,
-} from './backends/stereo';
+  fromCamera0,
+  type MultiViewOptions,
+  type MultiViewStatus,
+  type MultiViewCalibrationResult,
+  type ViewSource,
+  type ViewStatus,
+} from './backends/multiview';
+export { StereoHandTracker, type StereoOptions, type StereoSource } from './backends/stereo';
+export {
+  HandAssembler,
+  detectionsFromResult,
+  placeHand,
+  type Detection,
+  type PlacementSettings,
+} from './backends/assemble';
 export {
   calibrateStereo,
   StereoCalibrationError,
@@ -85,6 +97,8 @@ export {
   sampsonDistance,
   triangulate,
   triangulateLinear,
+  triangulateViews,
+  type ViewObservation,
   type RelativePose,
 } from './stereo/epipolar';
 export { groupByFrame, interpolateLandmarks, type TimedHands } from './stereo/pairing';

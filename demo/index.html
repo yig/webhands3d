@@ -49,6 +49,7 @@
         min-height: 240px;
       }
       #videoWrap.mirror { transform: scaleX(-1); }
+      #videoWrap.frozen canvas { cursor: crosshair; }
       #videoWrap, #videoWrap video, #videoWrap canvas {
         position: absolute;
         inset: 0;
@@ -109,13 +110,19 @@
         <label><span>Solve rotation too</span><input id="refine" type="checkbox" /></label>
         <p class="hint legend"><span style="background:#3ccf6e"></span>MediaPipe 2D <span style="background:#ff5a4f;margin-left:8px"></span>3D reprojected</p>
 
-        <h2>Calibrate</h2>
-        <p class="hint">1. Hold one open hand, fingers together, facing the camera.</p>
-        <label>Hand length, wrist→middle tip (cm) <input id="handLength" type="number" step="0.1" value="18.5" /></label>
+        <h2>1 · Hand size</h2>
+        <label>Reference <select id="scaleRef"></select></label>
+        <label id="handLengthRow">Wrist→middle tip (cm) <input id="handLength" type="number" step="0.1" value="18.5" /></label>
+        <p class="hint" id="scaleHint"></p>
         <button id="calScale">Calibrate hand size</button>
-        <p class="hint">2. Hold the same hand centred in the view at a measured distance from the camera.</p>
-        <label>Distance to palm (cm) <input id="distance" type="number" step="1" value="50" /></label>
-        <button id="calFocal">Calibrate distance</button>
+
+        <h2>2 · Camera focal length</h2>
+        <label>Reference <select id="focalRef"></select></label>
+        <label id="distanceRow">Camera→palm (cm) <input id="distance" type="number" step="1" value="50" /></label>
+        <p class="hint" id="focalHint"></p>
+        <button id="calFocal">Calibrate</button>
+        <button id="cancelFreeze" hidden>Cancel</button>
+        <p class="hint" id="focalViews"></p>
         <p class="hint"><button id="calReset">Reset calibration</button></p>
 
         <h2>Tracking</h2>

@@ -22,4 +22,11 @@ export {
   handScaleFromLength,
   focalFromDistance,
   collectSamples,
+  handScaleFromGrip,
+  focalFromRectangle,
+  homography4,
+  KNOWN_LENGTHS,
+  KNOWN_RECTANGLES,
+  type KnownLength,
+  type KnownRectangle,
 } from './calibration';

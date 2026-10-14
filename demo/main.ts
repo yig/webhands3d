@@ -2,11 +2,15 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import {
   HAND_BONES,
+  KNOWN_LENGTHS,
+  KNOWN_RECTANGLES,
   MonocularHandTracker,
   NUM_JOINTS,
   collectSamples,
   focalFromDistance,
   fovFromIntrinsics,
+  focalFromRectangle,
+  handScaleFromGrip,
   handScaleFromLength,
   intrinsicsFromFov,
   listCameras,
@@ -120,7 +124,7 @@ renderer.setAnimationLoop(() => renderer.render(scene, view));
 const ctx = overlay.getContext('2d')!;
 function drawOverlay(hands: Hand3D[]) {
   const k = tracker.intrinsics;
-  if (!k) return;
+  if (!k || freeze) return;
   if (overlay.width !== k.width || overlay.height !== k.height) {
     overlay.width = k.width;
     overlay.height = k.height;
@@ -243,10 +247,36 @@ async function calibrate(button: string, run: (samples: Hand3D[]) => string) {
   }
 }
 
+function setFocal(f: number) {
+  const k = tracker.intrinsics!;
+  tracker.intrinsics = { ...k, fx: f, fy: f };
+  persist({ focalOverWidth: f / k.width });
+  fovInput.value = fovFromIntrinsics(tracker.intrinsics).toFixed(1);
+  updateFrustum();
+}
+
+// --- Step 1: hand size, from a gripped object of known length or a measured hand ---
+const scaleRef = $<HTMLSelectElement>('scaleRef');
+scaleRef.append(
+  ...KNOWN_LENGTHS.map((o) => new Option(o.label, o.id)),
+  new Option('My measured hand length', 'hand'),
+);
+function updateScaleUi() {
+  const hand = scaleRef.value === 'hand';
+  $('handLengthRow').hidden = !hand;
+  $('scaleHint').textContent = hand
+    ? 'Hold one open hand, fingers together, facing the camera.'
+    : 'Hold the object by its two ends between thumb tip and index fingertip, facing the camera.';
+}
+scaleRef.addEventListener('change', updateScaleUi);
+updateScaleUi();
+
 $('calScale').addEventListener('click', () =>
   calibrate('calScale', (samples) => {
-    const length = parseFloat($<HTMLInputElement>('handLength').value) / 100;
-    const scale = handScaleFromLength(length, samples);
+    const known = KNOWN_LENGTHS.find((o) => o.id === scaleRef.value);
+    const scale = known
+      ? handScaleFromGrip(known.length, samples)
+      : handScaleFromLength(parseFloat($<HTMLInputElement>('handLength').value) / 100, samples);
     if (!Number.isFinite(scale)) throw new Error('Calibration failed');
     tracker.handScale = scale;
     persist({ handScale: scale });
@@ -254,19 +284,117 @@ $('calScale').addEventListener('click', () =>
   }),
 );
 
-$('calFocal').addEventListener('click', () =>
-  calibrate('calFocal', (samples) => {
-    const k = tracker.intrinsics!;
-    const distance = parseFloat($<HTMLInputElement>('distance').value) / 100;
-    const f = focalFromDistance(k.fx, distance, samples);
-    if (!Number.isFinite(f)) throw new Error('Calibration failed');
-    tracker.intrinsics = { ...k, fx: f, fy: f };
-    persist({ focalOverWidth: f / k.width });
-    fovInput.value = fovFromIntrinsics(tracker.intrinsics).toFixed(1);
-    updateFrustum();
-    return `Focal ${f.toFixed(0)} px (FOV ${fovInput.value}°) from ${samples.length} frames`;
-  }),
+// --- Step 2: focal length, from clicking a known rectangle's corners, or hand distance ---
+const focalRef = $<HTMLSelectElement>('focalRef');
+focalRef.append(
+  ...KNOWN_RECTANGLES.map((o) => new Option(o.label, o.id)),
+  new Option('Hand at a measured distance', 'distance'),
 );
+focalRef.value = 'a4';
+const calFocalButton = $<HTMLButtonElement>('calFocal');
+const cancelFreezeButton = $<HTMLButtonElement>('cancelFreeze');
+let focalViews: number[] = [];
+function updateFocalUi() {
+  const distance = focalRef.value === 'distance';
+  $('distanceRow').hidden = !distance;
+  $('focalHint').textContent = distance
+    ? 'Needs step 1 first. Hold the hand centred in view at the measured distance.'
+    : 'Hold the object tilted about 45° away from the camera, as large as possible in view. ' +
+      'Freeze, then click its 4 corners in order around the edge. Paper is much more ' +
+      'accurate than a card; add several views.';
+  calFocalButton.textContent = distance ? 'Calibrate distance' : 'Freeze & click corners';
+  focalViews = [];
+  $('focalViews').textContent = '';
+}
+focalRef.addEventListener('change', updateFocalUi);
+updateFocalUi();
+
+/** Frozen frame being annotated, with the corners clicked so far (image pixels). */
+let freeze: { clicks: number[] } | null = null;
+
+function drawFreeze() {
+  if (!freeze) return;
+  overlay.width = video.videoWidth;
+  overlay.height = video.videoHeight;
+  ctx.drawImage(frozenFrame, 0, 0);
+  const c = freeze.clicks;
+  const r = Math.max(3, overlay.width / 200);
+  ctx.strokeStyle = ctx.fillStyle = '#ffd23f';
+  ctx.lineWidth = r / 2;
+  ctx.beginPath();
+  for (let i = 0; i < c.length; i += 2) (i ? ctx.lineTo : ctx.moveTo).call(ctx, c[i], c[i + 1]);
+  ctx.stroke();
+  for (let i = 0; i < c.length; i += 2) {
+    ctx.beginPath();
+    ctx.arc(c[i], c[i + 1], r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+const frozenFrame = document.createElement('canvas');
+
+function endFreeze() {
+  freeze = null;
+  $('videoWrap').classList.remove('frozen');
+  calFocalButton.disabled = false;
+  cancelFreezeButton.hidden = true;
+}
+
+calFocalButton.addEventListener('click', () => {
+  if (focalRef.value === 'distance') {
+    calibrate('calFocal', (samples) => {
+      const distance = parseFloat($<HTMLInputElement>('distance').value) / 100;
+      const f = focalFromDistance(tracker.intrinsics!.fx, distance, samples);
+      if (!Number.isFinite(f)) throw new Error('Calibration failed');
+      setFocal(f);
+      return `Focal ${f.toFixed(0)} px (FOV ${fovInput.value}°) from ${samples.length} frames`;
+    });
+    return;
+  }
+  if (!video.videoWidth) return;
+  frozenFrame.width = video.videoWidth;
+  frozenFrame.height = video.videoHeight;
+  frozenFrame.getContext('2d')!.drawImage(video, 0, 0);
+  freeze = { clicks: [] };
+  $('videoWrap').classList.add('frozen');
+  calFocalButton.disabled = true;
+  cancelFreezeButton.hidden = false;
+  status.textContent = 'Click the 4 corners in order around the edge';
+  drawFreeze();
+});
+cancelFreezeButton.addEventListener('click', () => {
+  endFreeze();
+  status.textContent = 'Cancelled';
+});
+
+overlay.addEventListener('click', (e) => {
+  if (!freeze) return;
+  // Map the click to image pixels: undo object-fit: contain and the CSS mirror.
+  const rect = overlay.getBoundingClientRect();
+  const scale = Math.min(rect.width / overlay.width, rect.height / overlay.height);
+  let x = e.clientX - rect.left;
+  if ($('videoWrap').classList.contains('mirror')) x = rect.width - x;
+  const u = (x - (rect.width - overlay.width * scale) / 2) / scale;
+  const v = (e.clientY - rect.top - (rect.height - overlay.height * scale) / 2) / scale;
+  freeze.clicks.push(u, v);
+  drawFreeze();
+  if (freeze.clicks.length < 8) return;
+
+  const object = KNOWN_RECTANGLES.find((o) => o.id === focalRef.value)!;
+  const k = tracker.intrinsics!;
+  const f = focalFromRectangle(freeze.clicks, object, k.cx, k.cy);
+  endFreeze();
+  if (f === null) {
+    status.textContent = 'Could not use that view — tilt the object more and try again';
+    return;
+  }
+  focalViews.push(f);
+  const sorted = [...focalViews].sort((a, b) => a - b);
+  const median = sorted[sorted.length >> 1];
+  setFocal(median);
+  $('focalViews').textContent =
+    `${focalViews.length} view(s): ${focalViews.map((v) => v.toFixed(0)).join(', ')} px`;
+  status.textContent = `Focal ${median.toFixed(0)} px (FOV ${fovInput.value}°). Add more views to average.`;
+});
 
 $('calReset').addEventListener('click', () => {
   const k = tracker.intrinsics;
@@ -275,6 +403,8 @@ $('calReset').addEventListener('click', () => {
   tracker.handScale = 1;
   tracker.intrinsics = intrinsicsFromFov(k.width, k.height);
   fovInput.value = fovFromIntrinsics(tracker.intrinsics).toFixed(1);
+  focalViews = [];
+  $('focalViews').textContent = '';
   updateFrustum();
   status.textContent = 'Calibration reset';
 });

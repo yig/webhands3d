@@ -1,4 +1,5 @@
 import type { Intrinsics } from '../intrinsics';
+import { solveLinear } from './numeric';
 
 /**
  * Rigid pose (R, t) that maps model points into the camera frame: Q = R·P + t.
@@ -225,37 +226,4 @@ function mulMat3(A: ArrayLike<number>, B: ArrayLike<number>): Float64Array {
     for (let c = 0; c < 3; c++)
       out[r * 3 + c] = A[r * 3] * B[c] + A[r * 3 + 1] * B[3 + c] + A[r * 3 + 2] * B[6 + c];
   return out;
-}
-
-/** Solve the dense n × n system A·x = b by Gaussian elimination with partial pivoting. */
-function solveLinear(A: Float64Array, b: ArrayLike<number>, n: number): Float64Array | null {
-  const M = Float64Array.from(A);
-  const x = Float64Array.from(b);
-  for (let col = 0; col < n; col++) {
-    let pivot = col;
-    for (let r = col + 1; r < n; r++)
-      if (Math.abs(M[r * n + col]) > Math.abs(M[pivot * n + col])) pivot = r;
-    if (Math.abs(M[pivot * n + col]) < 1e-15) return null;
-    if (pivot !== col) {
-      for (let c = 0; c < n; c++) {
-        const tmp = M[col * n + c];
-        M[col * n + c] = M[pivot * n + c];
-        M[pivot * n + c] = tmp;
-      }
-      const tmp = x[col];
-      x[col] = x[pivot];
-      x[pivot] = tmp;
-    }
-    for (let r = col + 1; r < n; r++) {
-      const f = M[r * n + col] / M[col * n + col];
-      for (let c = col; c < n; c++) M[r * n + c] -= f * M[col * n + c];
-      x[r] -= f * x[col];
-    }
-  }
-  for (let r = n - 1; r >= 0; r--) {
-    let s = x[r];
-    for (let c = r + 1; c < n; c++) s -= M[r * n + c] * x[c];
-    x[r] = s / M[r * n + r];
-  }
-  return x;
 }

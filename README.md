@@ -15,12 +15,15 @@ npm run dev
 ```
 
 Open the printed URL in Chrome and click **Start camera**. For accurate depth,
-calibrate:
+calibrate using objects you probably have (no ruler needed):
 
-1. Measure your hand from wrist crease to middle fingertip, enter it, hold the
-   open hand facing the camera, click **Calibrate hand size**.
-2. Hold the same hand centred in view at a measured distance, enter it, click
-   **Calibrate distance**.
+1. **Hand size**: pick an object (credit card, AA battery, …), hold it by its
+   two ends between thumb tip and index fingertip, click **Calibrate hand size**.
+   Or enter your measured hand length.
+2. **Focal length**: pick a rectangle (A4 / Letter paper is most accurate),
+   hold it tilted ~45° away from the camera, click **Freeze & click corners**
+   and click its 4 corners. Repeat for a few views. Or hold your hand at a
+   measured distance.
 
 Calibration is saved per camera in `localStorage`.
 

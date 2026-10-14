@@ -1,11 +1,16 @@
+import { median } from '../geometry/numeric';
 import type { Hand3D } from '../types';
+
+export * from './objects';
 
 /*
  * Monocular depth is set by two unknowns that trade off against each other:
  * depth ≈ f · handSize / (hand size in pixels). So calibrate in two steps:
- *   1. hand scale, from the user's measured hand length;
- *   2. focal length, from the hand held at a measured distance.
- * Each step takes samples over a short window and uses their median.
+ *   1. hand scale, from an object of known length gripped between thumb and
+ *      index tips (objects.ts) or the user's measured hand length;
+ *   2. focal length, from the clicked corners of a known rectangle
+ *      (objects.ts) or the hand held at a measured distance.
+ * Hand-based steps take samples over a short window and use their median.
  */
 
 const WRIST = 0;
@@ -62,11 +67,4 @@ export function collectSamples(
       else reject(new Error('No hand seen during calibration'));
     }, durationMs);
   });
-}
-
-function median(values: number[]): number {
-  if (!values.length) return NaN;
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = sorted.length >> 1;
-  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }

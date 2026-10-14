@@ -29,10 +29,12 @@ src/
   camera.ts                listCameras, openCamera, onVideoFrame (rVFC with rAF fallback)
   geometry/solvePose.ts    linear translation + Levenberg–Marquardt PnP, projection helpers
   filter/oneEuro.ts        One Euro filter over a vector
-  calibration/index.ts     hand-scale and focal-length calibration from samples
+  geometry/numeric.ts      dense linear solve, median
+  calibration/index.ts     hand-scale and focal-length calibration from hand samples
+  calibration/objects.ts   known-size everyday objects; grip scale; focal from a clicked rectangle
   backends/monocular.ts    MonocularHandTracker (MediaPipe + solvePose + smoothing)
 demo/                      Vite dev page: video + 2D overlay, three.js 3D view, calibration UI
-test/                      vitest unit tests (synthetic PnP)
+test/                      vitest unit tests (synthetic PnP, rectangle focal calibration)
 ```
 
 Dependencies: `@mediapipe/tasks-vision` (runtime; WASM and model fetched from
@@ -89,15 +91,42 @@ forced strictly increasing for MediaPipe):
 4. Joints = R · P + t; One Euro filter per handedness (default
    `minCutoff 1.5, beta 5`); filters reset when a hand disappears.
 
-### Why depth needs calibration
+### Calibration
 
-depth ≈ f · (hand size) / (hand size in pixels). Two unknowns, f and s, enter as
-a product, so one measurement can't separate them:
+depth ≈ f · (hand size) / (hand size in pixels). The focal length f and the
+hand scale s enter as a product, so one measurement can't separate them; there
+are two steps. Each offers everyday objects of known size so no ruler is needed
+(`KNOWN_LENGTHS`, `KNOWN_RECTANGLES` in `calibration/objects.ts`).
 
-1. **Hand scale** — user enters wrist-crease → middle-fingertip length;
-   s = measured / median(MediaPipe wrist→middle-tip length) over ~1.5 s.
-2. **Focal length** — with s fixed, user holds the hand centred at a measured
-   distance; f' = f · measured / median(estimated z).
+1. **Hand scale s**
+   - *Grip an object* end-to-end between thumb tip and index fingertip: credit /
+     ID card long or short edge (ISO ID-1, 85.60 × 53.98 mm), AA or AAA battery.
+     s = known length / median(MediaPipe thumb-tip↔index-tip distance) over ~1.5 s.
+   - *Or* enter a measured wrist-crease → middle-fingertip length;
+     s = measured / median(MediaPipe wrist→middle-tip length).
+2. **Focal length f**
+   - *Click the 4 corners of a known rectangle* (A4, US Letter, credit card,
+     US or €5 banknote) in a frozen frame, held tilted ~45°. The homography from
+     the rectangle's metric plane gives two constraints linear in 1/f² (r1 ⟂ r2,
+     |r1| = |r2|), solved by least squares, assuming square pixels and a centred
+     principal point. Clicks may start at any corner in either direction: both
+     long/short-edge assignments are tried and the lower-residual one kept.
+     Views are accumulated and the median used.
+   - *Or* hold the hand (after step 1) centred at a measured distance;
+     f' = f · measured / median(estimated z).
+
+**Object size matters for the rectangle method** (simulated, 1.5 px uniform
+click noise, single view, median / 90th-percentile focal error):
+
+| Object, distance | 20° tilt | 34° tilt | 51° tilt |
+|---|---|---|---|
+| Card, 30 cm | 9 % / 22 % | 5 % / 12 % | 4 % / 9 % |
+| Card, 40 cm | 15 % / 46 % | 9 % / 21 % | 7 % / 18 % |
+| US banknote, 40 cm | 7 % / 17 % | 4 % / 10 % | 3 % / 7 % |
+| A4 / Letter, 60 cm | 3 % / 7 % | 1.6 % / 4 % | 1.2 % / 3 % |
+
+So the demo defaults to paper, asks for a ~45° tilt, rejects near-frontal views,
+and recommends several views. Lower-quality fallback: type in a FOV.
 
 Without calibration: s = 1 (MediaPipe's average hand) and a 60° horizontal FOV.
 Lateral position error scales with focal error; depth error scales with both.
@@ -114,10 +143,16 @@ Lateral position error scales with focal error; depth error scales with both.
   after calibration.
 - Whether world-landmark z (finger depth relative to the hand) is good enough
   for pinch detection, or needs a temporal prior.
+- Grip calibration assumes the thumb and index landmarks sit at the object's
+  ends; finger-pad thickness may bias s by a few mm over 50–86 mm. Compare
+  against the measured-hand-length method.
+- Real webcams' principal point may be off-centre by tens of pixels; if
+  rectangle-based f is inconsistent across views, also estimate (cx, cy) from
+  several views (Zhang's method).
 
 ## Roadmap
 
-1. ✅ Monocular backend, calibration, demo.
+1. ✅ Monocular backend, calibration with everyday objects, demo.
 2. Stereo in one tab (two `getUserMedia`, capture-time pairing, hand-keypoint
    self-calibration, triangulation; fall back to monocular per view on occlusion).
 3. Two-device mode over WebRTC.

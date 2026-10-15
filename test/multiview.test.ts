@@ -46,6 +46,8 @@ class FakeSource implements ViewSource {
 export interface EventOptions {
   /** Hide a hand from a camera at time t. */
   hidden?: (view: number, t: number, side: 'Left' | 'Right') => boolean;
+  /** The label a camera gives a hand at time t (default: correct), to simulate MediaPipe's mistakes. */
+  label?: (view: number, t: number, side: 'Left' | 'Right') => 'Left' | 'Right';
   /** Include a left hand (mirror image, 20 cm to the right of camera 0's view of the right hand). */
   leftHand?: boolean;
   /** Per camera: how long after capture its frames arrive, ms. */
@@ -94,7 +96,9 @@ function events(durationMs: number, options: EventOptions | ((view: number, t: n
       const reported = t - cam.offsetMs;
       const hands: Hand3D[] = [];
       for (const side of o.leftHand ? (['Right', 'Left'] as const) : (['Right'] as const)) {
-        if (!o.hidden?.(view, t, side)) hands.push(observe(cam, side, t, r, reported));
+        if (o.hidden?.(view, t, side)) continue;
+        const hand = observe(cam, side, t, r, reported);
+        hands.push(o.label ? { ...hand, handedness: o.label(view, t, side) } : hand);
       }
       out.push({ at: t + (o.delays?.[view] ?? 0), view, hands, reported });
     }
@@ -269,5 +273,39 @@ describe('MultiViewHandTracker', () => {
     const lengths = sources[1].skeletons.Right!.lengths;
     const err = Array.from(lengths, (l, b) => Math.abs(l / TRUE_LENGTHS[b] - 1));
     expect(median(err)).toBeLessThan(0.02);
+  });
+});
+
+describe('calibration with a second hand in view', () => {
+  async function calibrateWith(opts: EventOptions) {
+    const { sources, tracker } = setup({ refineSkeleton: false });
+    await tracker.start();
+    const r = rng(3);
+    const step = tracker.calibrate({ durationMs: 10, random: () => (r() + 1) / 2 });
+    for (const e of events(10000, opts)) sources[e.view].emit(e.hands, e.reported);
+    return step;
+  }
+  const halfTheTime = (_v: number, t: number, side: 'Left' | 'Right') => side === 'Left' && t % 2000 < 1000;
+
+  // MediaPipe's labels can disagree between cameras; pairing hands by label
+  // then matched the wrong hands (baseline 1 cm instead of 35 cm).
+  it('is not thrown off when one camera swaps the left/right labels', async () => {
+    const result = await calibrateWith({
+      leftHand: true,
+      hidden: halfTheTime,
+      label: (v, _t, side) => (v === 1 ? (side === 'Left' ? 'Right' : 'Left') : side),
+    });
+    for (const i of [1, 2]) {
+      const cal = result.views[i];
+      if (!cal || cal instanceof Error) throw cal ?? new Error('not calibrated');
+      expect(rotationError(cal.R, CAMS[i].R)).toBeLessThan((0.5 * Math.PI) / 180);
+      expect(Math.abs(Math.hypot(...cal.t) / Math.hypot(...CAMS[i].t) - 1)).toBeLessThan(0.03);
+    }
+  });
+
+  it('asks for one hand when both are always in view', async () => {
+    const result = await calibrateWith({ leftHand: true });
+    expect(result.views[1]).toBeInstanceOf(Error);
+    expect((result.views[1] as Error).message).toMatch(/one hand/);
   });
 });

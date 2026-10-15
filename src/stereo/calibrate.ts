@@ -99,7 +99,10 @@ export function calibrateStereo(input: StereoCalibrationInput, options: StereoCa
     if (s.cost < best.cost) best = s;
   }
   if (!Number.isFinite(best.cost) || !best.pose) {
-    throw new StereoCalibrationError('too-few-frames', 'Not enough frames with the hand visible in both cameras');
+    throw new StereoCalibrationError(
+      'too-few-frames',
+      'Not enough frames with one hand visible in both cameras (show just one hand while calibrating)',
+    );
   }
   // Fine: within ±60 ms, the offset that keeps the triangulated hand size most
   // constant — among offsets whose epipolar fit is still about as good as the
@@ -122,13 +125,21 @@ export function calibrateStereo(input: StereoCalibrationInput, options: StereoCa
     best = { ...best, offset: pick() };
   }
 
-  // 2. Relative pose at the best offset.
-  const c = correspondences(frames0, frames1, input.k0, input.k1, best.offset, Infinity, random);
-  const fit = ransacEssential(c.x0, c.x1, { iterations: 600, threshold, random, groups: c.groups });
+  // 2. Relative pose at the best offset (from frames where each camera sees one hand)…
+  const single = correspondences(frames0, frames1, input.k0, input.k1, best.offset, Infinity, random);
+  const fit = ransacEssential(single.x0, single.x1, { iterations: 600, threshold, random, groups: single.groups });
   if (!fit || fit.inliers.length < 50) {
     throw new StereoCalibrationError('no-geometry', 'Could not find a consistent camera geometry; move the hand around more');
   }
-  const pose = refineRelativePose(decomposeEssential(fit.E, c.x0, c.x1, fit.inliers), c.x0, c.x1, fit.inliers);
+  const first = refineRelativePose(decomposeEssential(fit.E, single.x0, single.x1, fit.inliers), single.x0, single.x1, fit.inliers);
+  // …then with two-hand frames added, paired by that geometry, refined on the inliers.
+  const c = correspondences(frames0, frames1, input.k0, input.k1, best.offset, Infinity, random, first);
+  const E1 = essentialFromPose(first.R, first.t);
+  const inliers: number[] = [];
+  for (let i = 0; i < c.n; i++) {
+    if (sampsonDistance(E1, c.x0[i * 2], c.x0[i * 2 + 1], c.x1[i * 2], c.x1[i * 2 + 1]) < threshold) inliers.push(i);
+  }
+  const pose = refineRelativePose(first, c.x0, c.x1, inliers);
 
   // 3. Metric scale from bone lengths of triangulated hands.
   const ratios: number[] = [];
@@ -166,7 +177,7 @@ export function calibrateStereo(input: StereoCalibrationInput, options: StereoCa
     t: Array.from(pose.t, (v) => v * scale),
     timeOffsetMs: best.offset,
     rmsPx: pose.rms * f,
-    inlierRatio: fit.inliers.length / c.n,
+    inlierRatio: inliers.length / c.n,
     frames: c.frames.length,
     scaleFrom,
   };
@@ -224,6 +235,75 @@ function sizeSpread(
 }
 
 /**
+ * The same hand in both cameras at the same instants, without trusting
+ * MediaPipe's left/right labels to agree between cameras (they often don't with
+ * two hands, and one swapped pair of labels can ruin the calibration):
+ * - when each camera sees exactly one hand, they are paired whatever their labels;
+ * - when a camera sees two hands, they are paired only if `pose` is given, by
+ *   the assignment that fits its epipolar geometry clearly better.
+ * The instants are the slower camera's frame times, the faster camera
+ * interpolated to them. `handedness` is camera 0's label.
+ */
+function pairHands(
+  frames0: TimedHands[],
+  frames1: TimedHands[],
+  k0: Intrinsics,
+  k1: Intrinsics,
+  offsetMs: number,
+  pose?: RelativePose,
+): { a: ArrayLike<number>; b: ArrayLike<number>; handedness: Handedness }[] {
+  const pairs: { a: ArrayLike<number>; b: ArrayLike<number>; handedness: Handedness }[] = [];
+  const cam1Slower = frameInterval(frames1, Infinity) > frameInterval(frames0, Infinity);
+  const [slow, fast] = cam1Slower ? [frames1, frames0] : [frames0, frames1];
+  const { maxGapMs, nearestMs } = pairingLimits(frameInterval(fast, Infinity));
+  const E = pose ? essentialFromPose(pose.R, pose.t) : null;
+  const sampson = (a: ArrayLike<number>, b: ArrayLike<number>) => {
+    let total = 0;
+    for (let j = 0; j < NUM_JOINTS; j++) {
+      total += sampsonDistance(
+        E!,
+        (a[j * 2] - k0.cx) / k0.fx, (a[j * 2 + 1] - k0.cy) / k0.fy,
+        (b[j * 2] - k1.cx) / k1.fx, (b[j * 2 + 1] - k1.cy) / k1.fy,
+      );
+    }
+    return total;
+  };
+  for (const frame of slow) {
+    const t = cam1Slower ? frame.timestamp + offsetMs : frame.timestamp - offsetMs;
+    const slowHands = frame.hands.filter((h) => h.debug?.landmarks2d);
+    // The fast camera's hands at t, by its own labels.
+    const fastHands = (['Left', 'Right'] as const).flatMap((side) => {
+      const r = interpolateLandmarks(fast, side, t, maxGapMs, nearestMs);
+      return r ? [{ side, landmarks: r.landmarks }] : [];
+    });
+    if (!slowHands.length || !fastHands.length) continue;
+    const add = (slowLandmarks: ArrayLike<number>, slowSide: Handedness, fastLandmarks: ArrayLike<number>, fastSide: Handedness) =>
+      pairs.push(
+        cam1Slower
+          ? { a: fastLandmarks, b: slowLandmarks, handedness: fastSide }
+          : { a: slowLandmarks, b: fastLandmarks, handedness: slowSide },
+      );
+    if (slowHands.length === 1 && fastHands.length === 1) {
+      add(slowHands[0].debug!.landmarks2d!, slowHands[0].handedness, fastHands[0].landmarks, fastHands[0].side);
+    } else if (E && slowHands.length === 2 && fastHands.length === 2) {
+      const [s0, s1] = slowHands.map((h) => h.debug!.landmarks2d!);
+      const [f0, f1] = fastHands.map((h) => h.landmarks);
+      const cost = (a: ArrayLike<number>, b: ArrayLike<number>) => (cam1Slower ? sampson(b, a) : sampson(a, b));
+      const straight = cost(s0, f0) + cost(s1, f1);
+      const crossed = cost(s0, f1) + cost(s1, f0);
+      if (straight < crossed * 0.5) {
+        add(s0, slowHands[0].handedness, f0, fastHands[0].side);
+        add(s1, slowHands[1].handedness, f1, fastHands[1].side);
+      } else if (crossed < straight * 0.5) {
+        add(s0, slowHands[0].handedness, f1, fastHands[1].side);
+        add(s1, slowHands[1].handedness, f0, fastHands[0].side);
+      }
+    }
+  }
+  return pairs;
+}
+
+/**
  * Normalised correspondences between the two cameras at the same instants
  * (camera 1 time = camera 0 time − offset). The instants are the slower
  * camera's frame times, and the faster camera is interpolated to them, so
@@ -239,31 +319,9 @@ function correspondences(
   offsetMs: number,
   limit: number,
   random?: () => number,
+  pose?: RelativePose,
 ) {
-  const pairs: { a: Float32Array; b: Float32Array; handedness: Handedness }[] = [];
-  const interval0 = frameInterval(frames0, Infinity), interval1 = frameInterval(frames1, Infinity);
-  if (interval1 > interval0) {
-    // Camera 1 is slower: its frame times, camera 0 interpolated.
-    const { maxGapMs, nearestMs } = pairingLimits(interval0);
-    for (const frame of frames1) {
-      for (const hand of frame.hands) {
-        const b = hand.debug?.landmarks2d;
-        if (!b) continue;
-        const a = interpolateLandmarks(frames0, hand.handedness, frame.timestamp + offsetMs, maxGapMs, nearestMs);
-        if (a) pairs.push({ a: a.landmarks, b, handedness: hand.handedness });
-      }
-    }
-  } else {
-    const { maxGapMs, nearestMs } = pairingLimits(interval1);
-    for (const frame of frames0) {
-      for (const hand of frame.hands) {
-        const a = hand.debug?.landmarks2d;
-        if (!a) continue;
-        const b = interpolateLandmarks(frames1, hand.handedness, frame.timestamp - offsetMs, maxGapMs, nearestMs);
-        if (b) pairs.push({ a, b: b.landmarks, handedness: hand.handedness });
-      }
-    }
-  }
+  const pairs = pairHands(frames0, frames1, k0, k1, offsetMs, pose);
   const maxFrames = Math.floor(limit / NUM_JOINTS);
   let chosen = pairs;
   if (pairs.length > maxFrames && random) {

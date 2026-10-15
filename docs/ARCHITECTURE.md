@@ -275,7 +275,15 @@ view at varied depths). Every other camera is calibrated **pairwise against
 camera 0** (`calibrateStereo`), so each must share some view with camera 0;
 pairs are stored separately (`webhands:stereo:<id0>|<idi>`), so adding a camera
 doesn't invalidate the others. Per pair:
-0. *Pairing* — correspondences are taken at the **slower camera's** frame
+0. *Pairing* — **hands are not matched by MediaPipe's left/right labels**,
+   which can disagree between cameras (one camera swapping them half the time
+   gave a 1 cm baseline instead of 35 cm in simulation). The pose is estimated
+   only from frames where each camera sees exactly one hand (paired whatever
+   their labels); then frames with two hands in both cameras are added, paired
+   by whichever assignment fits that pose's epipolar geometry clearly better
+   (2× lower Sampson cost), and the pose is refined on the inliers. With both
+   hands in view the whole time, calibration asks for one hand.
+   Correspondences are taken at the **slower camera's** frame
    times, with the faster camera interpolated to them (short gaps), and
    interpolation limits scale with the camera's frame interval
    (`pairingLimits`: gaps up to 2.5 intervals, nearest frame within 0.6). A

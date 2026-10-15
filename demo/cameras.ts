@@ -2,8 +2,10 @@ import QRCode from 'qrcode';
 import {
   MonocularHandTracker,
   MultiViewHandTracker,
+  Recorder,
   RemoteCamera,
   acceptRemotes,
+  downloadRecording,
   fromCamera0,
   httpSignaling,
   listCameras,
@@ -12,6 +14,7 @@ import {
   randomId,
   type CameraHandle,
   type Hand3D,
+  type Recording,
   type ViewSource,
 } from '../src';
 import { cm, createHandScene, drawHandOverlay, fpsCounter } from './shared';
@@ -301,23 +304,51 @@ handSize.addEventListener('click', () =>
   }),
 );
 
+// Every calibration run is recorded, for debugging.
+let lastCalibration: Recording | null = null;
+const downloadCalibration = $<HTMLButtonElement>('downloadCalibration');
+downloadCalibration.addEventListener('click', () => lastCalibration && downloadRecording(lastCalibration));
+
 const calibrate = $<HTMLButtonElement>('calibrate');
 calibrate.addEventListener('click', () =>
   runStep(calibrate, 'Move one hand through the shared view…', async () => {
     if (views.length < 2) throw new Error('Add at least two cameras');
-    const result = await tracker.calibrate({
-      onProgress: ({ elapsedMs, durationMs, frames }) => {
-        status.textContent =
-          `Move one hand through the shared view… ${Math.ceil((durationMs - elapsedMs) / 1000)} s ` +
-          `(hand frames per camera: ${frames.join(' / ')})`;
-      },
-    });
+    const recorder = new Recorder(tracker);
+    recorder.start();
+    let result: Awaited<ReturnType<typeof tracker.calibrate>> | undefined;
+    let error: unknown;
+    try {
+      result = await tracker.calibrate({
+        onProgress: ({ elapsedMs, durationMs, frames }) => {
+          status.textContent =
+            `Move one hand through the shared view… ${Math.ceil((durationMs - elapsedMs) / 1000)} s ` +
+            `(hand frames per camera: ${frames.join(' / ')})`;
+        },
+      });
+    } catch (e) {
+      error = e;
+      throw e;
+    } finally {
+      lastCalibration = recorder.stop('calibrate', result ? { views: result.views } : { error });
+      downloadCalibration.disabled = false;
+    }
     render();
     const lines = result.views.flatMap((r, i) =>
       i === 0 ? [] : [`camera ${i}: ${r instanceof Error ? r.message : r ? `${(Math.hypot(...r.t) * 100).toFixed(1)} cm, ${r.rmsPx.toFixed(1)} px` : 'skipped'}`],
     );
     const sides = Object.keys(result.skeletons);
     return `${lines.join('; ')}${sides.length ? `; skeleton measured (${sides.join(', ')})` : ''}`;
+  }),
+);
+
+const record = $<HTMLButtonElement>('record');
+record.addEventListener('click', () =>
+  runStep(record, 'Recording 10 s…', async () => {
+    const recorder = new Recorder(tracker);
+    recorder.start();
+    await new Promise((r) => setTimeout(r, 10000));
+    downloadRecording(recorder.stop('tracking'));
+    return 'Recording downloaded';
   }),
 );
 

@@ -52,6 +52,7 @@ src/
   remote/camera.ts         RemoteCamera (host side, a ViewSource) and RemoteCameraSender (phone side)
   remote/signaling.ts      Signaling interface + httpSignaling client (mailbox protocol)
   remote/webrtc.ts         connectToHost / acceptRemotes: WebRTC setup over Signaling, non-trickle ICE
+  debug/recorder.ts        Recorder: per-camera landmarks, timing and calibration as JSON (replay offline)
 tools/signaling.ts         Vite plugin serving the signaling mailbox (+ LAN address discovery)
 demo/                      Vite dev pages: index.html (one camera), cameras.html (any number of
                            local + phone cameras, QR join), remote.html (phone side);
@@ -415,6 +416,25 @@ uncalibrated camera whose hands are being ignored.
 cameras — it crops/zooms continuously, changing the intrinsics. Each camera's
 focal length matters (use the paper step per camera, or enter FOVs); errors
 there bias depth. Two `getUserMedia` calls are made sequentially.
+
+## Debug recordings
+
+`Recorder` (`src/debug/recorder.ts`) subscribes to every camera of a
+multi-camera tracker and records, per frame: capture time, arrival time, and
+each hand's label, confidence, 2D landmarks (0.1 px) and MediaPipe world
+landmarks — plus each camera's id, label, intrinsics, hand scale and skeleton,
+and the camera poses before and after. No images. ~0.5 MB per 10 s for two
+cameras. The cameras demo records every calibration run automatically
+("Download last calibration recording") and has "Record 10 s" for tracking
+problems.
+
+`npm run replay -- <file>` (`test/replay.test.ts`) prints per-camera stats
+(fps, arrival delay, frames with 0/1/2 hands, label counts, intrinsics), the
+browser's result, and re-runs `calibrateStereo` on each pair with its
+`onDiagnostics` hook: the coarse time-offset curve, the fine search (hand-size
+spread and Sampson error per offset), paired hand-frames (single-hand vs.
+total), inlier counts, and the bone-length scale ratios. Recordings go in
+`recordings/` (git-ignored).
 
 ## Open questions / to verify empirically
 

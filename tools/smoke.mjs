@@ -58,6 +58,16 @@ await phone.waitForTimeout(10000);
 check(/Connected/.test(await text(phone, '#status')), 'phone page connects over WebRTC');
 check((await tiles(host)).length === 2, 'phone appears as a camera on the host');
 
+// A calibration run (no hands: fails) is recorded and can be downloaded.
+await host.click('#calibrate');
+await host.waitForTimeout(13000);
+const download = host.waitForEvent('download');
+await host.click('#downloadCalibration');
+const file = await download;
+const recording = JSON.parse(await (await import('node:fs/promises')).readFile(await file.path(), 'utf8'));
+check(recording.format === 'webhands-recording' && recording.views.length === 2 && recording.views[1].frames.length > 50,
+  'calibration recording downloads with both cameras\' frames');
+
 // Remove the reference camera while the phone stays.
 await host.click('.view:nth-child(1) .tile-bar button[title="Remove this camera"]');
 await host.waitForTimeout(2000);

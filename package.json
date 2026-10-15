@@ -18,7 +18,8 @@
     "build": "tsc --noEmit && vite build && tsc -p tsconfig.build.json",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "smoke": "node tools/smoke.mjs"
+    "smoke": "node tools/smoke.mjs",
+    "replay": "f() { WEBHANDS_RECORDING=\"$1\" vitest run test/replay.test.ts --silent=false --reporter=dot; }; f"
   },
   "license": "MIT",
   "dependencies": {

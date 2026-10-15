@@ -46,6 +46,26 @@ export interface StereoCalibrationOptions {
   /** RANSAC inlier threshold, pixels. */
   thresholdPx?: number;
   random?: () => number;
+  /** Receives intermediate results, for debugging. */
+  onDiagnostics?: (d: StereoDiagnostics) => void;
+}
+
+/** Intermediate results of calibrateStereo (pixel units where noted). */
+export interface StereoDiagnostics {
+  /** Coarse time-offset search: offset → median Sampson distance (px) of the refined pose there. */
+  coarse: { offset: number; sampsonPx: number }[];
+  /** Fine search: offset → hand-size spread (MAD of log size) and median Sampson (px). */
+  fine: { offset: number; spread: number; sampsonPx: number }[];
+  chosenOffsetMs: number;
+  /** Paired hand-frames from single-hand frames (first pose) and in total (with two-hand frames). */
+  singleHandPairs: number;
+  totalPairs: number;
+  /** RANSAC inliers on single-hand pairs, and final inliers, as correspondences (21 per hand-frame). */
+  ransacInliers: number;
+  finalInliers: number;
+  correspondences: number;
+  /** Per-bone ratios (true / triangulated length) used for the scale: count and quartiles. */
+  scaleRatios: { count: number; q25: number; median: number; q75: number };
 }
 
 export class StereoCalibrationError extends Error {
@@ -75,7 +95,8 @@ export class StereoCalibrationError extends Error {
  * Needs the hand to move through the shared view at varied depths.
  */
 export function calibrateStereo(input: StereoCalibrationInput, options: StereoCalibrationOptions = {}): StereoCalibration {
-  const { maxOffsetMs = 200, thresholdPx = 4, random = Math.random } = options;
+  const { maxOffsetMs = 200, thresholdPx = 4, random = Math.random, onDiagnostics } = options;
+  const coarseCurve: StereoDiagnostics['coarse'] = [];
   const frames0 = groupByFrame(input.samples0);
   const frames1 = groupByFrame(input.samples1);
   const f = (input.k0.fx + input.k1.fx) / 2;
@@ -96,6 +117,7 @@ export function calibrateStereo(input: StereoCalibrationInput, options: StereoCa
   let best: ReturnType<typeof score> = { offset: 0, cost: Infinity, pose: null };
   for (let o = -maxOffsetMs; o <= maxOffsetMs; o += 10) {
     const s = score(o);
+    coarseCurve.push({ offset: o, sampsonPx: s.cost * f });
     if (s.cost < best.cost) best = s;
   }
   if (!Number.isFinite(best.cost) || !best.pose) {
@@ -107,9 +129,9 @@ export function calibrateStereo(input: StereoCalibrationInput, options: StereoCa
   // Fine: within ±60 ms, the offset that keeps the triangulated hand size most
   // constant — among offsets whose epipolar fit is still about as good as the
   // best (elsewhere the pose can degenerate into trivially constant sizes).
+  const candidates: { offset: number; spread: number; sampson: number }[] = [];
   {
     const start = best.pose;
-    const candidates: { offset: number; spread: number; sampson: number }[] = [];
     const evaluate = (o: number) => {
       if (candidates.some((c) => c.offset === o)) return;
       candidates.push({ offset: o, ...sizeSpread(frames0, frames1, input.k0, input.k1, o, start, threshold) });
@@ -140,6 +162,7 @@ export function calibrateStereo(input: StereoCalibrationInput, options: StereoCa
     if (sampsonDistance(E1, c.x0[i * 2], c.x0[i * 2 + 1], c.x1[i * 2], c.x1[i * 2 + 1]) < threshold) inliers.push(i);
   }
   const pose = refineRelativePose(first, c.x0, c.x1, inliers);
+  const ransacInliers = fit.inliers.length;
 
   // 3. Metric scale from bone lengths of triangulated hands.
   const ratios: number[] = [];
@@ -169,6 +192,19 @@ export function calibrateStereo(input: StereoCalibrationInput, options: StereoCa
       if (len > 0) ratios.push(truth[j - 1] / len);
     }
   }
+  const sortedRatios = [...ratios].sort((a, b) => a - b);
+  const q = (p: number) => sortedRatios[Math.floor(p * (sortedRatios.length - 1))] ?? NaN;
+  onDiagnostics?.({
+    coarse: coarseCurve,
+    fine: candidates.map((x) => ({ offset: x.offset, spread: x.spread, sampsonPx: x.sampson * f })).sort((a, b) => a.offset - b.offset),
+    chosenOffsetMs: best.offset,
+    singleHandPairs: single.frames.length,
+    totalPairs: c.frames.length,
+    ransacInliers,
+    finalInliers: inliers.length,
+    correspondences: c.n,
+    scaleRatios: { count: ratios.length, q25: q(0.25), median: q(0.5), q75: q(0.75) },
+  });
   if (!ratios.length) throw new StereoCalibrationError('no-geometry', 'Could not triangulate the hand to set the scale');
   const scale = median(ratios);
 

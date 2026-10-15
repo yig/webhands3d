@@ -114,3 +114,13 @@ export { dataChannelLink, memoryLinkPair, type Link } from './remote/link';
 export { PROTOCOL_VERSION, type HostToRemote, type RemoteToHost, type WireHand } from './remote/protocol';
 export { httpSignaling, type Signaling, type SignalMessage } from './remote/signaling';
 export { acceptRemotes, connectToHost, randomId, type WebRtcOptions } from './remote/webrtc';
+export {
+  Recorder,
+  downloadRecording,
+  recordedSamples,
+  type RecordableTracker,
+  type Recording,
+  type RecordedFrame,
+  type RecordedView,
+} from './debug/recorder';
+export type { StereoDiagnostics } from './stereo/calibrate';

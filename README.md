@@ -101,5 +101,6 @@ await tracker.calibrate({ onProgress }); // move one hand around, 12 s; also mea
 - `npm run dev`: demo dev server
 - `npm run dev:lan`: demo over HTTPS on the local network (for phones)
 - `npm run smoke [-- <url>]`: headless browser check of the demo pages (needs Chrome and a running dev server)
+- `npm run replay -- <recording.json>`: re-run calibration on a debug recording from the cameras demo, with diagnostics
 - `npm test`: unit tests
 - `npm run build`: library to `dist/`

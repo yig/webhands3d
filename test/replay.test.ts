@@ -7,6 +7,10 @@
  */
 import { readFileSync } from 'node:fs';
 import { describe, it } from 'vitest';
+import { MultiViewHandTracker, type ViewSource } from '../src/backends/multiview';
+import type { Intrinsics } from '../src/intrinsics';
+import { decodeHandedness } from '../src/remote/protocol';
+import type { HandFrameListener, Hand3D } from '../src/types';
 import { recordedSamples, type Recording, type RecordedView } from '../src/debug/recorder';
 import { median } from '../src/geometry/numeric';
 import { defaultIntrinsics } from '../src/intrinsics';
@@ -51,7 +55,7 @@ function describeView(v: RecordedView): string[] {
 }
 
 describe.skipIf(!path)('replay recording', () => {
-  it('re-runs stereo calibration with diagnostics', () => {
+  it('re-runs stereo calibration and tracking with diagnostics', async () => {
     const rec = JSON.parse(readFileSync(path!, 'utf8')) as Recording;
     if (useDefaultFov) {
       for (const v of rec.views) if (v.intrinsics) v.intrinsics = defaultIntrinsics(v.intrinsics.width, v.intrinsics.height);
@@ -105,6 +109,94 @@ describe.skipIf(!path)('replay recording', () => {
         );
       }
     }
+    out.push('', ...(await replayTracking(rec)));
     console.log(out.join('\n'));
   });
 });
+
+class ReplaySource implements ViewSource {
+  private listeners = new Set<HandFrameListener>();
+  constructor(
+    public intrinsics: Intrinsics,
+    public cameraId: string,
+    public handScale: number,
+    public skeletons: ViewSource['skeletons'],
+  ) {}
+  async start() {}
+  stop() {}
+  onFrame(l: HandFrameListener) {
+    this.listeners.add(l);
+    return () => this.listeners.delete(l);
+  }
+  emit(hands: Hand3D[], t: number) {
+    for (const l of this.listeners) l(hands, t);
+  }
+}
+
+/**
+ * Feed the recorded frames, in arrival order, through MultiViewHandTracker with
+ * the camera poses the session had, and report where each output hand came from.
+ */
+async function replayTracking(rec: Recording): Promise<string[]> {
+  const calibrations = rec.calibrationsBefore.some(Boolean) ? rec.calibrationsBefore : rec.calibrationsAfter;
+  if (!calibrations.some(Boolean)) return ['tracking replay: no camera poses in the recording'];
+  const lines = [`tracking replay with the session's camera poses (${rec.calibrationsBefore.some(Boolean) ? 'at start' : 'at end'} of recording):`];
+  for (const maxPx of [12, Infinity]) {
+    let clock = 0;
+    const sources = rec.views.map((v) => new ReplaySource(v.intrinsics!, v.cameraId, v.handScale, v.skeletons));
+    const tracker = new MultiViewHandTracker(sources, {
+      calibrations,
+      smoothing: false,
+      refineSkeleton: false,
+      maxReprojectionPx: maxPx,
+      now: () => clock,
+    });
+    await tracker.start();
+    const output: Hand3D[] = [];
+    tracker.onFrame((hands) => output.push(...hands));
+    const events = rec.views.flatMap((v, i) => v.frames.map((f) => ({ i, f }))).sort((a, b) => a.f.at - b.f.at);
+    for (const { i, f } of events) {
+      clock = f.at;
+      sources[i].emit(
+        f.hands.map((h) => ({
+          handedness: decodeHandedness(h.h),
+          joints: new Float32Array(63),
+          confidence: h.c,
+          timestamp: f.t,
+          debug: { landmarks2d: Float32Array.from(h.uv), worldLandmarks: Float32Array.from(h.w) },
+        })),
+        f.t,
+      );
+    }
+    tracker.stop();
+    const counts = new Map<string, number>();
+    for (const h of output) {
+      const key = `${h.handedness} ${h.debug?.source === 'stereo' ? `cameras ${h.debug.views?.join('+')}` : h.debug?.source}`;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    const errs = output.filter((h) => h.debug?.source === 'stereo').map((h) => h.debug!.reprojectionError!);
+    lines.push(
+      `  max error ${maxPx} px: ${[...counts].map(([k, v]) => `${k}: ${v}`).join(', ') || 'no hands'}` +
+        (errs.length ? `; triangulation error median ${median(errs).toFixed(1)} / p90 ${pct(errs, 0.9).toFixed(1)} px` : ''),
+    );
+  }
+  // Label agreement where each camera sees exactly one hand at about the same time.
+  for (const v of rec.views.slice(1)) {
+    const cal = calibrations[v.index];
+    if (!cal) {
+      lines.push(`  camera ${v.index}: no pose (not calibrated) — its hands are ignored`);
+      continue;
+    }
+    let both = 0, agree = 0;
+    for (const f of rec.views[0].frames) {
+      if (f.hands.length !== 1) continue;
+      let best: (typeof v.frames)[number] | undefined;
+      for (const g of v.frames) if (!best || Math.abs(g.t + cal.timeOffsetMs - f.t) < Math.abs(best.t + cal.timeOffsetMs - f.t)) best = g;
+      if (!best || Math.abs(best.t + cal.timeOffsetMs - f.t) > 40 || best.hands.length !== 1) continue;
+      both++;
+      if (best.hands[0].h === f.hands[0].h) agree++;
+    }
+    lines.push(`  camera 0 ↔ ${v.index}: ${both} instants with one hand in both; labels agree in ${agree}`);
+  }
+  return lines;
+}

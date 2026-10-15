@@ -479,8 +479,17 @@ problems.
 browser's result, and re-runs `calibrateStereo` on each pair with its
 `onDiagnostics` hook: the coarse time-offset curve, the fine search (hand-size
 spread and Sampson error per offset), paired hand-frames (single-hand vs.
-total), inlier counts, and the bone-length scale ratios. Recordings go in
-`recordings/` (git-ignored).
+total), inlier counts, and the bone-length scale ratios. It then replays
+**tracking**: the recorded frames, in arrival order, through
+`MultiViewHandTracker` with the camera poses the session had, reporting where
+each output hand came from (triangulated vs. one camera), the triangulation
+errors (also with no error cutoff), and how often the cameras' left/right
+labels agree. Recordings go in `recordings/` (git-ignored).
+
+Reading the readout: "from camera N only" means the hand wasn't triangulated —
+usually because the stored camera pose doesn't match what the cameras see
+(triangulation error above 12 px); single-camera 3D is shown instead, so it can
+look fine. Recalibrating the cameras fixes it.
 
 ## Open questions / to verify empirically
 

@@ -27,6 +27,17 @@ describe('calibrateStereo', () => {
     expect(cal.scaleFrom).toBe('skeleton');
   });
 
+  it('calibrates against a slow camera (10 fps, like a phone running MediaPipe)', () => {
+    const { samples0, samples1 } = simulateStereo({ offsetMs: 120, fps1: 10, seed: 11 });
+    const cal = calibrateStereo(
+      { samples0, samples1, k0: K0, k1: K1, skeletonLengths: { Right: TRUE_LENGTHS }, handScale: 1 },
+      { random },
+    );
+    expect(Math.abs(cal.timeOffsetMs - 120)).toBeLessThanOrEqual(8);
+    expect(rotationError(cal.R, R01)).toBeLessThan((1 * Math.PI) / 180);
+    expect(Math.abs(Math.hypot(...cal.t) / BASELINE - 1)).toBeLessThan(0.03);
+  });
+
   it('falls back to hand size for scale when no skeleton is calibrated', () => {
     const { samples0, samples1 } = simulateStereo({ offsetMs: 0, seed: 3 });
     const cal = calibrateStereo({ samples0, samples1, k0: K0, k1: K1, handScale: 1 }, { random });

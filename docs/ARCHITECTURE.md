@@ -275,14 +275,22 @@ view at varied depths). Every other camera is calibrated **pairwise against
 camera 0** (`calibrateStereo`), so each must share some view with camera 0;
 pairs are stored separately (`webhands:stereo:<id0>|<idi>`), so adding a camera
 doesn't invalidate the others. Per pair:
-1. *Time offset* — coarse: for offsets −200…200 ms (10 ms steps), camera i's
-   landmarks are interpolated to camera 0's frame times and a RANSAC essential
-   matrix is fit; lowest median Sampson distance wins. Fine: ±60 ms around it,
-   the offset that keeps the **triangulated hand size most constant** (MAD of
-   log size). A timing error shifts points along the hand's motion; where that
-   is along the epipolar lines the epipolar fit can't see it, but it changes
-   triangulated depth, so the hand appears to grow and shrink. (This fixed a
-   20 ms error for a camera on the other side of the hand.)
+0. *Pairing* — correspondences are taken at the **slower camera's** frame
+   times, with the faster camera interpolated to them (short gaps), and
+   interpolation limits scale with the camera's frame interval
+   (`pairingLimits`: gaps up to 2.5 intervals, nearest frame within 0.6). A
+   phone running MediaPipe may deliver only 10–15 fps; with fixed 30 fps limits
+   most of its frames went unpaired and calibration degraded or failed.
+1. *Time offset* — coarse: for offsets −200…200 ms (10 ms steps), a RANSAC
+   essential matrix refined on its inliers; lowest median Sampson distance
+   wins. Fine: ±60 ms around it, the offset that keeps the **triangulated hand
+   size most constant** (MAD of log size), among offsets whose epipolar fit is
+   within 1.5× (+0.5 px) of the best — elsewhere the pose can degenerate into
+   trivially constant sizes. A timing error shifts points along the hand's
+   motion; where that is along the epipolar lines the epipolar fit can't see
+   it, but it changes triangulated depth, so the hand appears to grow and
+   shrink. (This fixed a 20 ms error for a camera on the other side of the
+   hand.)
 2. *Relative pose* — 8-point essential matrix in RANSAC (samples from distinct
    frames, 4 px) → decomposition with points in front of both cameras →
    Levenberg–Marquardt on Sampson distances.
@@ -300,12 +308,13 @@ skeleton** (below).
 2. Each instant waits until every *active* camera (a frame arrived in the last
    500 ms) has a frame at or after it, but at most the slowest active camera's
    typical **arrival delay** (90th percentile of arrival − capture over its
-   last 30 frames) + 30 ms, capped at 500 ms. Phones run MediaPipe and then
+   last 30 frames) **plus its frame interval** (its next frame may be captured
+   up to one interval later) + 30 ms, capped at 600 ms. Phones run MediaPipe and then
    send over WiFi, so their frames can arrive 100–200 ms after capture; the
    former fixed 120 ms wait dropped them, so a hand seen only by a phone
    vanished. Latency is therefore about the slowest camera's delay.
-3. Each camera's 2D landmarks are interpolated to the instant (nearest frame
-   within 40 ms if not bracketed). Hands are matched by handedness; with two
+3. Each camera's 2D landmarks are interpolated to the instant, with limits
+   scaled to that camera's frame interval (`pairingLimits`). Hands are matched by handedness; with two
    hands, each camera's labels are checked against the first camera that sees
    both, and swapped if that fits the epipolar geometry much better.
 4. Triangulate each joint from **all cameras that see the hand** (N-view DLT +
@@ -382,10 +391,17 @@ turned inward, hand on a smooth path 40–80 cm away, 1–1.5 px noise, clocks
 | Joint error, cameras 1+2 only (camera 0 lost the hand) | < 5 mm median | — |
 | Second hand seen only by cameras 1+2, their frames arriving 150 ms late | tracked in every frame, < 5 mm median | — |
 | Camera 0 stops sending | cameras 1+2 keep driving the output | — |
+| Phones at 10 / 12 fps arriving 150 / 180 ms late: calibration, then a hand only they see | both calibrated < 1°; hand tracked (triangulated) in ≥ 90 % of frames | — |
+| Pair calibration with a 10 fps camera, offset 120 ms | offset 119 ms, < 1°, baseline within 3 % | — |
 | Skeleton measured by triangulation | < 3 % per bone (median) | — |
 
 vs. ~15 mm joint error for the monocular skeleton method. Calibration takes
 < 1 s to compute per camera.
+
+**Diagnostics**: `tracker.status.views[i]` reports each camera's fps, arrival
+delay, the hands in its latest frame, and whether it is `used` (camera 0 or
+calibrated, and sending). The demo readout lists these per camera and flags an
+uncalibrated camera whose hands are being ignored.
 
 **Practical notes**: turn off Center Stage (macOS Video Effects) on all
 cameras — it crops/zooms continuously, changing the intrinsics. Each camera's

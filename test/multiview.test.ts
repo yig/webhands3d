@@ -50,6 +50,8 @@ export interface EventOptions {
   leftHand?: boolean;
   /** Per camera: how long after capture its frames arrive, ms. */
   delays?: number[];
+  /** Per camera: frame rate (default 30). */
+  fps?: number[];
   seed?: number;
 }
 
@@ -88,7 +90,7 @@ function events(durationMs: number, options: EventOptions | ((view: number, t: n
   const r = rng(o.seed ?? 5);
   const out: { at: number; view: number; hands: Hand3D[]; reported: number }[] = [];
   CAMS.forEach((cam, view) => {
-    for (let t = cam.phaseMs; t < durationMs; t += 1000 / 30) {
+    for (let t = cam.phaseMs; t < durationMs; t += 1000 / (o.fps?.[view] ?? 30)) {
       const reported = t - cam.offsetMs;
       const hands: Hand3D[] = [];
       for (const side of o.leftHand ? (['Right', 'Left'] as const) : (['Right'] as const)) {
@@ -178,6 +180,39 @@ describe('MultiViewHandTracker', () => {
     expect(median(errors)).toBeLessThan(0.005);
   });
 
+  it('calibrates and tracks with slow, late phones (10 fps, 150 ms)', async () => {
+    let clock = 0;
+    const { sources, tracker } = setup({ refineSkeleton: false, now: () => clock });
+    await tracker.start();
+    const slow = { fps: [30, 10, 12], delays: [20, 150, 180] };
+    // Calibrate on one hand moving through the shared view.
+    const r = rng(3);
+    const step = tracker.calibrate({ durationMs: 10, random: () => (r() + 1) / 2 });
+    for (const e of events(10000, slow)) {
+      clock = e.at;
+      sources[e.view].emit(e.hands, e.reported);
+    }
+    const result = await step;
+    for (const i of [1, 2]) {
+      const cal = result.views[i];
+      if (!cal || cal instanceof Error) throw cal ?? new Error(`camera ${i} not calibrated`);
+      expect(rotationError(cal.R, CAMS[i].R)).toBeLessThan((1 * Math.PI) / 180);
+    }
+    // Then a second hand that only the phones see.
+    const out: Hand3D[] = [];
+    tracker.onFrame((hands) => out.push(...hands));
+    const base = 20000;
+    for (const e of events(4000, { ...slow, seed: 9, leftHand: true, hidden: (view, _t, side) => view === 0 && side === 'Left' })) {
+      clock = base + e.at;
+      sources[e.view].emit(e.hands.map((h) => ({ ...h, timestamp: h.timestamp + base })), e.reported + base);
+    }
+    const settled = out.filter((h) => h.timestamp > base + 1000);
+    const left = settled.filter((h) => h.handedness === 'Left');
+    const right = settled.filter((h) => h.handedness === 'Right');
+    expect(left.length).toBeGreaterThan(right.length * 0.9);
+    expect(left.filter((h) => h.debug?.source === 'stereo').length).toBeGreaterThan(left.length * 0.9);
+  });
+
   it('keeps tracking from the other cameras when camera 0 stops sending frames', async () => {
     let clock = 0;
     const { sources, tracker } = setup({
@@ -199,7 +234,12 @@ describe('MultiViewHandTracker', () => {
   });
 
   it('re-anchors to another camera when camera 0 is removed', async () => {
-    const { sources, tracker } = setup({ calibrations: [null, trueCalibration(1), trueCalibration(2)], refineSkeleton: false });
+    let clock = 0;
+    const { sources, tracker } = setup({
+      calibrations: [null, trueCalibration(1), trueCalibration(2)],
+      refineSkeleton: false,
+      now: () => clock,
+    });
     await tracker.start();
     tracker.removeSource(sources[0]);
     expect(tracker.sources).toEqual([sources[1], sources[2]]);
@@ -210,7 +250,11 @@ describe('MultiViewHandTracker', () => {
     expect(cal.timeOffsetMs).toBeCloseTo(CAMS[2].offsetMs - CAMS[1].offsetMs, 6);
     const out: Hand3D[] = [];
     tracker.onFrame((hands) => out.push(...hands));
-    for (const e of events(1500)) if (e.view > 0) sources[e.view].emit(e.hands, e.reported);
+    for (const e of events(1500)) {
+      if (e.view === 0) continue;
+      clock = e.at;
+      sources[e.view].emit(e.hands, e.reported);
+    }
     // After the first frame (sent before the other camera had reported), all triangulated.
     expect(out.length).toBeGreaterThan(25);
     expect(out.slice(1).every((h) => h.debug?.source === 'stereo')).toBe(true);

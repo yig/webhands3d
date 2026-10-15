@@ -7,7 +7,7 @@ import { median } from '../geometry/numeric';
 import { PALM_JOINTS } from '../geometry/skeleton';
 import { calibrateStereo, type StereoCalibration, type StereoCalibrationOptions } from '../stereo/calibrate';
 import { sampsonDistance, triangulateViews, type ViewObservation } from '../stereo/epipolar';
-import { interpolateLandmarks, type TimedHands } from '../stereo/pairing';
+import { frameInterval, interpolateLandmarks, pairingLimits, type TimedHands } from '../stereo/pairing';
 import {
   NUM_JOINTS,
   type Hand3D,
@@ -56,6 +56,17 @@ export interface ViewStatus {
   calibration: StereoCalibration | null;
   /** Distance to camera 0, metres. */
   baseline: number | null;
+  /** Frames per second arriving from this camera (recent). */
+  fps: number;
+  /** Typical time from capture to arrival here (90th percentile), ms; null if not used. */
+  delayMs: number | null;
+  /** Hands in this camera's latest frame (its own labels). */
+  hands: Handedness[];
+  /**
+   * Whether its frames currently feed the output: camera 0 or calibrated, and
+   * sending. An uncalibrated camera's hands can't be placed in camera 0's frame.
+   */
+  used: boolean;
 }
 
 export interface MultiViewStatus {
@@ -81,9 +92,7 @@ const DRIVER_TIMEOUT_MS = 300;
 /** Margin added to the slowest active camera's typical arrival delay before fusing anyway, ms. */
 const WAIT_MARGIN_MS = 30;
 /** Never wait longer than this for a slow camera, ms. */
-const MAX_WAIT_MS = 500;
-/** Tolerance when matching a camera's frame to an instant without a frame after it, ms. */
-const NEAREST_MS = 40;
+const MAX_WAIT_MS = 600;
 /** Triangulated frames this good feed the skeleton measurement. */
 const GOOD_MEDIAN_PX = 3;
 const GOOD_MAX_PX = 10;
@@ -121,6 +130,8 @@ export class MultiViewHandTracker implements HandTrackerBackend {
   private lastArrival: number[] = [];
   /** Per camera: recent arrival delays (arrival − capture on camera 0's clock), ms. */
   private lags: number[][] = [];
+  /** Per camera (calibrated or not): recent arrival times and latest hands, for status. */
+  private arrivals = new Map<ViewSource, { times: number[]; hands: Handedness[] }>();
   private flushTimer: ReturnType<typeof setInterval> | undefined;
   private started = false;
   private readonly skeletonSamples = { Left: [] as Float32Array[], Right: [] as Float32Array[] };
@@ -137,15 +148,25 @@ export class MultiViewHandTracker implements HandTrackerBackend {
   }
 
   get status(): MultiViewStatus {
+    const now = this.now();
     return {
       views: this.sources.map((s, index) => {
         const calibration = index ? this.calibrations[index] : null;
+        const calibrated = index === 0 || !!calibration;
+        const arrivals = this.arrivals.get(s);
+        const times = arrivals?.times.filter((t) => now - t < 2000) ?? [];
+        const fps = times.length > 1 ? ((times.length - 1) * 1000) / (times.at(-1)! - times[0]) : 0;
+        const lags = this.lags[index];
         return {
           index,
           cameraId: s.cameraId,
-          calibrated: index === 0 || !!calibration,
+          calibrated,
           calibration,
           baseline: calibration ? Math.hypot(...calibration.t) : index === 0 ? 0 : null,
+          fps,
+          delayMs: calibrated && lags?.length ? percentile90(lags) : null,
+          hands: times.length ? arrivals!.hands : [],
+          used: calibrated && fps > 0,
         };
       }),
       skeletonSamples: { Left: this.skeletonSamples.Left.length, Right: this.skeletonSamples.Right.length },
@@ -373,8 +394,13 @@ export class MultiViewHandTracker implements HandTrackerBackend {
   }
 
   private onView(i: number, hands: Hand3D[], captureTime: number) {
-    if (i > 0 && !this.calibrations[i]) return;
     const now = this.now();
+    const record = this.arrivals.get(this.sources[i]) ?? { times: [], hands: [] };
+    record.times.push(now);
+    if (record.times.length > 60) record.times.shift();
+    record.hands = hands.map((h) => h.handedness);
+    this.arrivals.set(this.sources[i], record);
+    if (i > 0 && !this.calibrations[i]) return;
     if (this.usableViews().length < 2) {
       // Nothing to fuse yet: camera 0 passes through.
       if (i === 0) this.emit(hands.map((h) => ({ ...h, debug: { ...h.debug, source: 'view0', views: [0] } })), captureTime);
@@ -408,9 +434,12 @@ export class MultiViewHandTracker implements HandTrackerBackend {
   private flush() {
     const now = this.now();
     const active = this.usableViews().filter((i) => now - (this.lastArrival[i] ?? -Infinity) < ACTIVE_MS);
+    // A camera's frame after instant t is captured up to one frame interval
+    // later, then arrives after its usual delay.
     const wait = Math.min(
       MAX_WAIT_MS,
-      Math.max(0, ...active.map((i) => percentile90(this.lags[i] ?? []))) + WAIT_MARGIN_MS,
+      Math.max(0, ...active.map((i) => percentile90(this.lags[i] ?? []) + frameInterval(this.histories[i] ?? []))) +
+        WAIT_MARGIN_MS,
     );
     while (this.pending.length) {
       const t = this.pending[0];
@@ -428,8 +457,9 @@ export class MultiViewHandTracker implements HandTrackerBackend {
     const seen = new Map<number, Map<Handedness, { hand: Hand3D; landmarks: ArrayLike<number> }>>();
     for (const i of views) {
       const byLabel = new Map<Handedness, { hand: Hand3D; landmarks: ArrayLike<number> }>();
+      const { maxGapMs, nearestMs } = pairingLimits(frameInterval(histories[i]));
       for (const side of ['Left', 'Right'] as const) {
-        const b = interpolateLandmarks(histories[i], side, t, 80, NEAREST_MS);
+        const b = interpolateLandmarks(histories[i], side, t, maxGapMs, nearestMs);
         if (b) byLabel.set(side, b);
       }
       if (byLabel.size) seen.set(i, byLabel);

@@ -197,8 +197,14 @@ tracker.onFrame((hands) => {
       h.debug?.source === 'stereo' ? `  triangulation error ${h.debug.reprojectionError?.toFixed(1)} px` : '',
     );
   }
-  const st = tracker.status.skeletonSamples;
-  lines.push(`skeleton samples: left ${st.Left}, right ${st.Right}`);
+  const status = tracker.status;
+  lines.push('', 'cameras:');
+  for (const v of status.views) {
+    const seen = v.hands.length ? v.hands.map((h) => h[0]).join('+') : '–';
+    const delay = v.delayMs !== null ? `, ${v.delayMs.toFixed(0)} ms delay` : '';
+    lines.push(`  ${v.index}: ${v.fps.toFixed(0)} fps${delay}, sees ${seen}${v.calibrated ? '' : '  NOT CALIBRATED: hands ignored'}`);
+  }
+  lines.push(`skeleton samples: left ${status.skeletonSamples.Left}, right ${status.skeletonSamples.Right}`);
   readout.textContent = lines.filter(Boolean).join('\n');
 });
 

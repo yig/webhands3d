@@ -1,4 +1,5 @@
 import { JOINT_PARENTS, NUM_BONES, boneLengths } from '../geometry/bones';
+import { essentialFromPose } from '../geometry/linalg';
 import { median } from '../geometry/numeric';
 import type { Intrinsics } from '../intrinsics';
 import { NUM_JOINTS, type Hand3D, type Handedness } from '../types';
@@ -11,7 +12,7 @@ import {
   triangulateLinear,
   type RelativePose,
 } from './epipolar';
-import { groupByFrame, interpolateLandmarks, type TimedHands } from './pairing';
+import { frameInterval, groupByFrame, interpolateLandmarks, pairingLimits, type TimedHands } from './pairing';
 
 /** Where camera 1 is relative to camera 0: X1 = R·X0 + t (metres). */
 export interface StereoCalibration {
@@ -80,45 +81,45 @@ export function calibrateStereo(input: StereoCalibrationInput, options: StereoCa
   const f = (input.k0.fx + input.k1.fx) / 2;
   const threshold = thresholdPx / f;
 
-  // 1. Time offset (coarse then fine), scored by median Sampson distance.
-  const score = (offset: number, iterations: number) => {
+  // 1. Time offset. Coarse: every 10 ms, a robust pose fit (RANSAC, then
+  // refined on its inliers) scored by median Sampson distance.
+  const score = (offset: number) => {
     const c = correspondences(frames0, frames1, input.k0, input.k1, offset, 3000, random);
-    if (c.n < 100) return { offset, cost: Infinity };
-    const fit = ransacEssential(c.x0, c.x1, { iterations, threshold, random, groups: c.groups });
-    if (!fit) return { offset, cost: Infinity };
-    const d = Array.from({ length: c.n }, (_, i) => sampsonDistance(fit.E, c.x0[i * 2], c.x0[i * 2 + 1], c.x1[i * 2], c.x1[i * 2 + 1]));
-    return { offset, cost: median(d) };
+    if (c.n < 100) return { offset, cost: Infinity, pose: null };
+    const fit = ransacEssential(c.x0, c.x1, { iterations: 120, threshold, random, groups: c.groups });
+    if (!fit || fit.inliers.length < 50) return { offset, cost: Infinity, pose: null };
+    const pose = refineRelativePose(decomposeEssential(fit.E, c.x0, c.x1, fit.inliers), c.x0, c.x1, fit.inliers, 5);
+    const E = essentialFromPose(pose.R, pose.t);
+    const d = Array.from({ length: c.n }, (_, i) => sampsonDistance(E, c.x0[i * 2], c.x0[i * 2 + 1], c.x1[i * 2], c.x1[i * 2 + 1]));
+    return { offset, cost: median(d), pose };
   };
-  let best = { offset: 0, cost: Infinity };
+  let best: ReturnType<typeof score> = { offset: 0, cost: Infinity, pose: null };
   for (let o = -maxOffsetMs; o <= maxOffsetMs; o += 10) {
-    const s = score(o, 120);
+    const s = score(o);
     if (s.cost < best.cost) best = s;
   }
-  if (!Number.isFinite(best.cost)) {
+  if (!Number.isFinite(best.cost) || !best.pose) {
     throw new StereoCalibrationError('too-few-frames', 'Not enough frames with the hand visible in both cameras');
   }
+  // Fine: within ±60 ms, the offset that keeps the triangulated hand size most
+  // constant — among offsets whose epipolar fit is still about as good as the
+  // best (elsewhere the pose can degenerate into trivially constant sizes).
   {
-    const c = correspondences(frames0, frames1, input.k0, input.k1, best.offset, 3000, random);
-    const fit = ransacEssential(c.x0, c.x1, { iterations: 300, threshold, random, groups: c.groups });
-    if (fit) {
-      const start = decomposeEssential(fit.E, c.x0, c.x1, fit.inliers);
-      let bestSpread = Infinity;
-      const centre = best.offset;
-      for (let o = centre - 60; o <= centre + 60; o += 4) {
-        const spread = sizeSpread(frames0, frames1, input.k0, input.k1, o, start);
-        if (spread < bestSpread) {
-          bestSpread = spread;
-          best = { offset: o, cost: best.cost };
-        }
-      }
-      for (let o = best.offset - 3; o <= best.offset + 3; o += 1) {
-        const spread = sizeSpread(frames0, frames1, input.k0, input.k1, o, start);
-        if (spread < bestSpread) {
-          bestSpread = spread;
-          best = { offset: o, cost: best.cost };
-        }
-      }
-    }
+    const start = best.pose;
+    const candidates: { offset: number; spread: number; sampson: number }[] = [];
+    const evaluate = (o: number) => {
+      if (candidates.some((c) => c.offset === o)) return;
+      candidates.push({ offset: o, ...sizeSpread(frames0, frames1, input.k0, input.k1, o, start, threshold) });
+    };
+    const pick = () => {
+      const minSampson = Math.min(...candidates.map((c) => c.sampson));
+      const ok = candidates.filter((c) => c.sampson <= minSampson * 1.5 + 0.5 / f);
+      return ok.reduce((a, b) => (b.spread < a.spread ? b : a)).offset;
+    };
+    for (let o = best.offset - 60; o <= best.offset + 60; o += 4) evaluate(o);
+    const coarse = pick();
+    for (let o = coarse - 3; o <= coarse + 3; o += 1) evaluate(o);
+    best = { ...best, offset: pick() };
   }
 
   // 2. Relative pose at the best offset.
@@ -183,11 +184,22 @@ function sizeSpread(
   k1: Intrinsics,
   offsetMs: number,
   start: RelativePose,
-): number {
+  threshold: number,
+): { spread: number; sampson: number } {
   const c = correspondences(frames0, frames1, k0, k1, offsetMs, 3000);
-  if (c.n < 100) return Infinity;
-  const all = Array.from({ length: c.n }, (_, i) => i);
-  const pose = refineRelativePose(start, c.x0, c.x1, all, 8);
+  if (c.n < 100) return { spread: Infinity, sampson: Infinity };
+  // Refine on the correspondences consistent with the starting pose.
+  const E0 = essentialFromPose(start.R, start.t);
+  const inliers: number[] = [];
+  for (let i = 0; i < c.n; i++) {
+    if (sampsonDistance(E0, c.x0[i * 2], c.x0[i * 2 + 1], c.x1[i * 2], c.x1[i * 2 + 1]) < 3 * threshold) inliers.push(i);
+  }
+  if (inliers.length < 50) return { spread: Infinity, sampson: Infinity };
+  const pose = refineRelativePose(start, c.x0, c.x1, inliers, 8);
+  const E = essentialFromPose(pose.R, pose.t);
+  const sampson = median(
+    Array.from({ length: c.n }, (_, i) => sampsonDistance(E, c.x0[i * 2], c.x0[i * 2 + 1], c.x1[i * 2], c.x1[i * 2 + 1])),
+  );
   const logSizes: number[] = [];
   for (const frame of c.frames) {
     const joints: (Float64Array | null)[] = [];
@@ -206,15 +218,18 @@ function sizeSpread(
     }
     if (size > 0) logSizes.push(Math.log(size));
   }
-  if (logSizes.length < 20) return Infinity;
+  if (logSizes.length < 20) return { spread: Infinity, sampson };
   const m = median(logSizes);
-  return median(logSizes.map((v) => Math.abs(v - m)));
+  return { spread: median(logSizes.map((v) => Math.abs(v - m))), sampson };
 }
 
 /**
- * Normalised correspondences between camera 0 frames and camera 1 landmarks
- * interpolated to the same instant (camera 1 time = camera 0 time − offset).
- * At most `limit` correspondences, sampled by whole frames.
+ * Normalised correspondences between the two cameras at the same instants
+ * (camera 1 time = camera 0 time − offset). The instants are the slower
+ * camera's frame times, and the faster camera is interpolated to them, so
+ * interpolation spans short gaps even when one camera is slow (e.g. a phone
+ * running MediaPipe at 10 fps). At most `limit` correspondences, sampled by
+ * whole frames.
  */
 function correspondences(
   frames0: TimedHands[],
@@ -226,12 +241,27 @@ function correspondences(
   random?: () => number,
 ) {
   const pairs: { a: Float32Array; b: Float32Array; handedness: Handedness }[] = [];
-  for (const frame of frames0) {
-    for (const hand of frame.hands) {
-      const a = hand.debug?.landmarks2d;
-      if (!a) continue;
-      const b = interpolateLandmarks(frames1, hand.handedness, frame.timestamp - offsetMs);
-      if (b) pairs.push({ a, b: b.landmarks, handedness: hand.handedness });
+  const interval0 = frameInterval(frames0, Infinity), interval1 = frameInterval(frames1, Infinity);
+  if (interval1 > interval0) {
+    // Camera 1 is slower: its frame times, camera 0 interpolated.
+    const { maxGapMs, nearestMs } = pairingLimits(interval0);
+    for (const frame of frames1) {
+      for (const hand of frame.hands) {
+        const b = hand.debug?.landmarks2d;
+        if (!b) continue;
+        const a = interpolateLandmarks(frames0, hand.handedness, frame.timestamp + offsetMs, maxGapMs, nearestMs);
+        if (a) pairs.push({ a: a.landmarks, b, handedness: hand.handedness });
+      }
+    }
+  } else {
+    const { maxGapMs, nearestMs } = pairingLimits(interval1);
+    for (const frame of frames0) {
+      for (const hand of frame.hands) {
+        const a = hand.debug?.landmarks2d;
+        if (!a) continue;
+        const b = interpolateLandmarks(frames1, hand.handedness, frame.timestamp - offsetMs, maxGapMs, nearestMs);
+        if (b) pairs.push({ a, b: b.landmarks, handedness: hand.handedness });
+      }
     }
   }
   const maxFrames = Math.floor(limit / NUM_JOINTS);

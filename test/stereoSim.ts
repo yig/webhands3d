@@ -30,11 +30,13 @@ export interface StereoSimOptions {
   offsetMs?: number;
   noisePx?: number;
   seed?: number;
+  /** Camera 1's frame rate. */
+  fps1?: number;
 }
 
 /** Simulated onFrame samples from both views, as MonocularHandTracker would report them. */
 export function simulateStereo(options: StereoSimOptions = {}) {
-  const { durationMs = 10000, offsetMs = 60, noisePx = 1.5, seed = 7 } = options;
+  const { durationMs = 10000, offsetMs = 60, noisePx = 1.5, seed = 7, fps1 = 30 } = options;
   const r = rng(seed);
   const samples0: Hand3D[] = [];
   const samples1: Hand3D[] = [];
@@ -56,7 +58,7 @@ export function simulateStereo(options: StereoSimOptions = {}) {
     };
   };
   for (let t = 0; t < durationMs; t += 1000 / 30) samples0.push(make(t, 0, t));
-  for (let t = 13; t < durationMs; t += 1000 / 30) samples1.push(make(t, 1, t - offsetMs));
+  for (let t = 13; t < durationMs; t += 1000 / fps1) samples1.push(make(t, 1, t - offsetMs));
   return { samples0, samples1 };
 }
 

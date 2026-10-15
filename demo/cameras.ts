@@ -8,7 +8,7 @@ import {
   downloadRecording,
   fromCamera0,
   httpSignaling,
-  listCameras,
+  watchCameras,
   openCamera,
   pickRectangle,
   calibrateFromPattern,
@@ -230,14 +230,21 @@ tracker.onFrame((hands) => {
 
 // ---------- local cameras ----------
 const localSelect = $<HTMLSelectElement>('localCamera');
-async function populateCameras() {
-  const cams = await listCameras();
+let knownCameras: MediaDeviceInfo[] = [];
+function renderCameraList() {
   const used = new Set(views.flatMap((v) => (v.camera ? [v.camera.cameraId] : [])));
   localSelect.replaceChildren(
-    ...cams.filter((c) => !used.has(c.deviceId)).map((c, j) => new Option(c.label || `Camera ${j + 1}`, c.deviceId)),
+    ...knownCameras.filter((c) => !used.has(c.deviceId)).map((c, j) => new Option(c.label || `Camera ${j + 1}`, c.deviceId)),
   );
 }
-populateCameras().catch(() => {});
+async function populateCameras() {
+  renderCameraList();
+}
+// Ask for camera access up front, so the list shows every camera by name.
+watchCameras((cameras) => {
+  knownCameras = cameras;
+  renderCameraList();
+}, { requestPermission: true, onError: (e) => say(`Camera access is blocked (${errorText(e)}). Allow the camera in the browser's site settings, then reload.`, 'error') });
 
 const addLocal = $<HTMLButtonElement>('addLocal');
 addLocal.addEventListener('click', () =>

@@ -37,7 +37,9 @@ await mono.close();
 
 // Several cameras.
 const host = await page('/cameras.html', 'cameras');
-await host.waitForTimeout(500);
+await host.waitForTimeout(1500);
+const before0 = await options(host);
+check(before0.length === 3 && before0.every((o) => /fake_device/.test(o)), `cameras are listed by name before adding any (${before0.join(', ')})`);
 await host.click('#addLocal');
 await host.waitForTimeout(6000);
 await host.click('#addLocal');

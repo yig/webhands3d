@@ -2,7 +2,7 @@ import {
   KNOWN_LENGTHS,
   KNOWN_RECTANGLES,
   MonocularHandTracker,
-  listCameras,
+  watchCameras,
   openCamera,
   pickRectangle,
   calibrateFromPattern,
@@ -92,15 +92,20 @@ async function startCamera(deviceId?: string) {
   await tracker.start();
   say(camera.label);
   renderCalibration(cal.status);
-  await populateCameras(camera.cameraId);
+  populateCameras(camera.cameraId);
 }
 
-async function populateCameras(selected: string) {
-  const cams = await listCameras();
+let knownCameras: MediaDeviceInfo[] = [];
+function populateCameras(selected = cameraSelect.value) {
   cameraSelect.replaceChildren(
-    ...cams.map((c, i) => new Option(c.label || `Camera ${i + 1}`, c.deviceId, false, c.deviceId === selected)),
+    ...knownCameras.map((c, i) => new Option(c.label || `Camera ${i + 1}`, c.deviceId, false, c.deviceId === selected)),
   );
 }
+// Ask for camera access up front, so the list shows every camera by name.
+watchCameras((cameras) => {
+  knownCameras = cameras;
+  populateCameras();
+}, { requestPermission: true, onError: (e) => say(`Camera access is blocked (${errorText(e)}). Allow the camera in the browser's site settings, then reload.`, 'error') });
 
 $('start').addEventListener('click', () =>
   startCamera().catch((e) => say(errorText(e), 'error')),

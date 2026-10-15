@@ -16,9 +16,32 @@ export interface CameraHandle {
   stop(): void;
 }
 
-export async function listCameras(): Promise<MediaDeviceInfo[]> {
-  const devices = await navigator.mediaDevices.enumerateDevices();
-  return devices.filter((d) => d.kind === 'videoinput');
+/**
+ * The cameras available. Before camera permission is granted, browsers hide
+ * camera names (and some list only one placeholder device); with
+ * `requestPermission`, this asks for permission first if needed (a brief
+ * getUserMedia that is stopped at once), so the list is complete and named.
+ */
+export async function listCameras(options: { requestPermission?: boolean } = {}): Promise<MediaDeviceInfo[]> {
+  const list = async () => (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput');
+  let cameras = await list();
+  if (options.requestPermission && (!cameras.length || cameras.some((c) => !c.label))) {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+    stream.getTracks().forEach((t) => t.stop());
+    cameras = await list();
+  }
+  return cameras;
+}
+
+/** Call `listener` with the camera list now and whenever cameras are plugged in or removed. Returns an unsubscribe function. */
+export function watchCameras(
+  listener: (cameras: MediaDeviceInfo[]) => void,
+  options: { requestPermission?: boolean; onError?: (e: unknown) => void } = {},
+): () => void {
+  const update = () => listCameras(options).then(listener, options.onError ?? (() => {}));
+  update();
+  navigator.mediaDevices.addEventListener('devicechange', update);
+  return () => navigator.mediaDevices.removeEventListener('devicechange', update);
 }
 
 export async function openCamera(options: OpenCameraOptions = {}): Promise<CameraHandle> {

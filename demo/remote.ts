@@ -4,7 +4,7 @@ import {
   connectToHost,
   fovFromIntrinsics,
   httpSignaling,
-  listCameras,
+  watchCameras,
   openCamera,
   pickRectangle,
   calibrateFromPattern,
@@ -57,15 +57,20 @@ tracker.calibrator.onChange((s) => {
   if (s.focal.hfovDegrees !== null && document.activeElement !== fovInput) fovInput.value = s.focal.hfovDegrees.toFixed(1);
 });
 
+let knownCameras: MediaDeviceInfo[] = [];
 async function populateCameras() {
-  const cams = await listCameras();
+  const cams = knownCameras;
   const previous = cameraSelect.value;
   cameraSelect.replaceChildren(...cams.map((c, i) => new Option(c.label || `Camera ${i + 1}`, c.deviceId)));
   // Prefer the back camera on phones.
   const back = cams.find((c) => /back|rear|environment/i.test(c.label));
   cameraSelect.value = previous || back?.deviceId || cams[0]?.deviceId || '';
 }
-populateCameras().catch(() => {});
+// Ask for camera access up front, so the list shows every camera by name.
+watchCameras((cameras) => {
+  knownCameras = cameras;
+  populateCameras();
+}, { requestPermission: true, onError: (e) => say(`Camera access is blocked (${errorText(e)}). Allow the camera in the browser's site settings, then reload.`, 'error') });
 
 async function start() {
   const room = roomInput.value.trim();

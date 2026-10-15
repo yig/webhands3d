@@ -154,7 +154,8 @@ export class Calibrator {
   addRectangleView(corners: ArrayLike<number>, rectangle: string | KnownRectangle): number {
     const k = this.requireIntrinsics();
     const rect = resolveKnown(KNOWN_RECTANGLES, rectangle);
-    const f = focalFromRectangle(corners, rect, k.cx, k.cy);
+    // The current focal length (default or earlier views) breaks the long/short-edge tie.
+    const f = focalFromRectangle(corners, rect, k.cx, k.cy, this.views.length ? median(this.views) : k.fx);
     if (f === null) {
       throw new CalibrationError('degenerate-view', 'Could not use that view: tilt the object more (~45°) and try again');
     }

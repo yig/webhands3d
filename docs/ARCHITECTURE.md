@@ -222,8 +222,23 @@ click noise, single view, median / 90th-percentile focal error):
 | US banknote, 40 cm | 7 % / 17 % | 4 % / 10 % | 3 % / 7 % |
 | A4 / Letter, 60 cm | 3 % / 7 % | 1.6 % / 4 % | 1.2 % / 3 % |
 
-So the demo defaults to paper, asks for a ~45° tilt, rejects near-frontal views,
+So the demo defaults to paper, asks for a 30–60° tilt, rejects near-frontal views,
 and recommends several views. Lower-quality fallback: type in a FOV.
+
+The tilt angle is never used — the homography solves for it — so it needn't
+be accurate, only large enough. **Edge-aligned tilts** (the sheet tipped about
+one of its own edges, the natural way to hold it) make one of the two
+constraints vanish, so both long/short-edge assignments fit exactly; the tie
+is broken by the camera's current focal length (`priorFocal`; the default or
+earlier views). Without that, such views were off by up to 2.6×.
+
+**Paper isn't rigid** (simulated, perfect clicks, A4 at 60 cm, tilts 30–60° in
+all directions; focal error median / worst): a bow along the long side of
+1 / 2 / 3 cm → 0.7 / 2.7 / 6 % (worst 1.4 / 6 / 14 %); along the short side
+1 / 2 / 3 cm → 1.3 / 5.5 / 11 % (worst 3 / 12 / 30 %); one corner curling
+5 mm / 1 cm → 2 / 4 % (worst 5 / 10 %). Bending is a bias (the sheet acts
+smaller), so averaging views doesn't remove it: the demo says to lay the
+sheet on a book or clipboard.
 
 **Drift simulation** (`test/bones.test.ts` setup: random poses 45–80 cm,
 MediaPipe size error ±15 % per frame, joint noise 2 mm xy / 6 mm z, 1.5 px 2D

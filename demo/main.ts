@@ -186,7 +186,8 @@ function updateFocalUi() {
   $('distanceRow').hidden = !distance;
   $('focalHint').textContent = distance
     ? 'Needs step 1 first. Hold the hand centred in view at the measured distance.'
-    : 'Hold the object tilted about 45° away from the camera, as large as possible in view. ' +
+    : 'Hold the object tilted 30–60° away from the camera (any direction), flat (paper on a book or ' +
+      'clipboard), as large as possible in view. ' +
       'Freeze, then click its 4 corners in order around the edge (Esc cancels). Paper is much ' +
       'more accurate than a card; add several views.';
   calFocal.textContent = distance ? 'Calibrate distance' : 'Freeze & click corners';

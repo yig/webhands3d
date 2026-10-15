@@ -93,7 +93,7 @@ function addControls(view: View, bar: HTMLElement) {
     });
     const paper = document.createElement('button');
     paper.textContent = 'A4';
-    paper.title = 'Click the corners of a sheet of A4 held tilted ~45°';
+    paper.title = 'Click the corners of a flat sheet of A4 (on a book or clipboard) tilted 30–60°';
     paper.addEventListener('click', () =>
       runStep(paper, `Click the 4 corners of the A4 sheet in ${view.name} (Esc cancels)`, async () => {
         const f = cal.addRectangleView(await pickCorners(view.video!, { mirrored: true }), 'a4');

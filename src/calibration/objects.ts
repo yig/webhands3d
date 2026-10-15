@@ -84,6 +84,11 @@ export function homography4(src: ArrayLike<number>, dst: ArrayLike<number>): Flo
  *
  * Corners may start anywhere and go either way around: both assignments of the
  * first edge (long or short) are tried and the more self-consistent one kept.
+ * When the rectangle is tilted about one of its own edges (the natural way to
+ * hold a sheet: top tipped away), one constraint vanishes and *both*
+ * assignments fit exactly; then the one closer to `priorFocal` (e.g. the
+ * camera's current focal length) wins. Without a prior, a wrong choice there
+ * gave focal lengths off by up to 2.5×.
  *
  * @param corners  4 image points (pixels), in order around the rectangle.
  * @returns focal length in pixels, or null if the view is degenerate.
@@ -93,11 +98,17 @@ export function focalFromRectangle(
   rect: Pick<KnownRectangle, 'width' | 'height'>,
   cx: number,
   cy: number,
+  priorFocal?: number,
 ): number | null {
   const a = focalCandidate(corners, rect.width, rect.height, cx, cy);
   const b = focalCandidate(corners, rect.height, rect.width, cx, cy);
-  const best = !a ? b : !b ? a : a.residual <= b.residual ? a : b;
-  return best ? best.focal : null;
+  if (!a || !b) return (a ?? b)?.focal ?? null;
+  const ambiguous = Math.max(a.residual, b.residual) < 10 * Math.min(a.residual, b.residual) + 1e-6;
+  if (ambiguous && priorFocal) {
+    const distance = (f: number) => Math.abs(Math.log(f / priorFocal));
+    return distance(a.focal) <= distance(b.focal) ? a.focal : b.focal;
+  }
+  return a.residual <= b.residual ? a.focal : b.focal;
 }
 
 function focalCandidate(

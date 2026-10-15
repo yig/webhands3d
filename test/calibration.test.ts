@@ -54,6 +54,17 @@ describe('focalFromRectangle', () => {
     expect(Math.abs(f! - K.fx) / K.fx).toBeLessThan(0.05);
   });
 
+  // Tilting the sheet about one of its own edges (top tipped away) makes both
+  // long/short-edge assignments fit exactly; a prior focal length decides.
+  it('handles a sheet tilted about its own edge, given a rough prior', () => {
+    const a4 = KNOWN_RECTANGLES.find((r) => r.id === 'a4')!;
+    const prior = intrinsicsFromFov(1280, 720, 66).fx; // the default; truth here is 62°
+    for (const w of [[0.7, 0, 0], [0, 0.7, 0], [0.9, 0, 0], [0, 0.5, 0]] as [number, number, number][]) {
+      const f = focalFromRectangle(imageCorners(w, [0, 0, 0.6], a4.width, a4.height), a4, K.cx, K.cy, prior);
+      expect(Math.abs(f! - K.fx) / K.fx).toBeLessThan(0.01);
+    }
+  });
+
   it('rejects a card facing the camera head-on', () => {
     expect(focalFromRectangle(imageCorners([0, 0, 0.2], [0, 0, 0.35]), card, K.cx, K.cy)).toBeNull();
   });

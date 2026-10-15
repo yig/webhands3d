@@ -258,8 +258,17 @@ class). Each camera is a `ViewSource` (a `CalibratableTracker` with start/stop
 and optionally a `calibrator`): a local `MonocularHandTracker` or a
 `RemoteCamera`. Cameras can be added and removed while running
 (`addSource` / `removeSource`). **Camera 0 is the reference**: output is in its
-frame and on its clock, so it is drop-in compatible with monocular output. Each
-camera keeps its own per-camera calibration (intrinsics, hand size, skeleton).
+frame and on its clock, so it is drop-in compatible with monocular output, and
+other cameras are calibrated against it. Each camera keeps its own per-camera
+calibration (intrinsics, hand size, skeleton).
+
+Camera 0 is *not* needed per frame: any usable camera's frames can drive the
+output (below). **Removing camera 0** re-anchors to the first remaining
+calibrated camera (`reanchor(k)`, also public): every pose and time offset is
+re-expressed relative to camera k (X_j = R_j·R_kᵀ·X_k + (t_j − R_j·R_kᵀ·t_k),
+offset_j − offset_k) and saved under the new pair keys; output switches to
+camera k's frame. Without another calibrated camera, the next camera simply
+becomes camera 0.
 
 **Calibration** (`tracker.calibrate()`, 12 s, one hand moving through the shared
 view at varied depths). Every other camera is calibrated **pairwise against
@@ -282,20 +291,31 @@ doesn't invalidate the others. Per pair:
 Then the collected frames are fused exactly as at runtime to **measure the
 skeleton** (below).
 
-**Per frame** (driven by camera 0's frames):
-1. Wait (≤ 120 ms) until every active calibrated camera has a frame at or after
-   the same instant; interpolate each camera's 2D landmarks to camera 0's
-   capture time (via its offset). Latency ≤ ~1 frame.
-2. Match hands by handedness; per camera, use swapped labels if that fits the
-   epipolar geometry with camera 0 much better (two hands in both).
-3. Triangulate each joint from **all cameras that see the hand** (N-view DLT +
+**Per frame**:
+1. Every usable camera (camera 0 + calibrated ones) keeps ~1 s of frames on
+   camera 0's clock (capture time + its offset). Output instants are the
+   **driving camera's** frame times: camera 0, or — if no frame has arrived
+   from it for 300 ms — the first usable camera that is still sending. So a
+   frozen or disconnected camera 0 doesn't stop tracking.
+2. Each instant waits until every *active* camera (a frame arrived in the last
+   500 ms) has a frame at or after it, but at most the slowest active camera's
+   typical **arrival delay** (90th percentile of arrival − capture over its
+   last 30 frames) + 30 ms, capped at 500 ms. Phones run MediaPipe and then
+   send over WiFi, so their frames can arrive 100–200 ms after capture; the
+   former fixed 120 ms wait dropped them, so a hand seen only by a phone
+   vanished. Latency is therefore about the slowest camera's delay.
+3. Each camera's 2D landmarks are interpolated to the instant (nearest frame
+   within 40 ms if not bracketed). Hands are matched by handedness; with two
+   hands, each camera's labels are checked against the first camera that sees
+   both, and swapped if that fits the epipolar geometry much better.
+4. Triangulate each joint from **all cameras that see the hand** (N-view DLT +
    Gauss–Newton on pixel error, `triangulateViews`). Camera 0 need not see it.
-4. If the median joint error exceeds 12 px: with 3+ cameras, drop the camera
+5. If the median joint error exceeds 12 px: with 3+ cameras, drop the camera
    that disagrees most and retry; otherwise (or with one camera) use the most
    confident camera's single-view 3D, mapped into camera 0's frame.
    `debug.source` is `stereo` (triangulated) or `view<i>`; `debug.views` lists
    the cameras used.
-5. One Euro filter per hand. Before any calibration, camera 0 passes through.
+6. One Euro filter per hand. Before any camera is calibrated, camera 0 passes through.
 
 **Skeleton measurement.** Triangulated hands give each bone's true 3D length
 directly, with no foreshortening ambiguity and no reliance on MediaPipe's z.
@@ -341,8 +361,11 @@ A phone (or another tab/computer) joins as a camera:
   browser). Phones need HTTPS for camera access: `npm run dev:lan` serves the
   demo over HTTPS with a self-signed certificate on all interfaces (phones show
   a certificate warning to accept once).
-- Verified headless (Chrome, fake cameras): phone page connects over WebRTC,
-  streams at camera rate, appears and disappears as a camera on the host.
+- Verified headless (`npm run smoke`, Chrome with fake cameras, no hands):
+  pages load without errors; local cameras are added and removed (and offered
+  again); a phone page connects over WebRTC, streams at camera rate, and
+  appears / disappears on the host; removing the reference camera keeps the
+  phone running.
 
 **Simulation** (`test/stereoSim.ts`, `test/multiview.test.ts`: 1280×720 60°,
 1920×1080 70° and 1280×720 65° cameras, 30–35 cm either side of camera 0 and
@@ -357,6 +380,8 @@ turned inward, hand on a smooth path 40–80 cm away, 1–1.5 px noise, clocks
 | Baseline (hand-size scale) | within 8 % | — |
 | Joint error, triangulated | 0.5 mm median | — |
 | Joint error, cameras 1+2 only (camera 0 lost the hand) | < 5 mm median | — |
+| Second hand seen only by cameras 1+2, their frames arriving 150 ms late | tracked in every frame, < 5 mm median | — |
+| Camera 0 stops sending | cameras 1+2 keep driving the output | — |
 | Skeleton measured by triangulation | < 3 % per bone (median) | — |
 
 vs. ~15 mm joint error for the monocular skeleton method. Calibration takes

@@ -140,15 +140,16 @@ async function addView(
 function removeView(view: View) {
   const i = views.indexOf(view);
   if (i < 0) return;
-  if (i === 0 && views.length > 1) {
-    status.textContent = 'The first camera is the reference; remove the others first.';
-    return;
-  }
   views.splice(i, 1);
+  // Removing the reference re-anchors the tracker to another calibrated camera,
+  // which reorders its cameras; keep the tiles in the same order.
   tracker.removeSource(view.source);
+  views.sort((a, b) => tracker.sources.indexOf(a.source) - tracker.sources.indexOf(b.source));
+  for (const v of views) tiles.append(v.tile);
   view.camera?.stop();
   if (view.source instanceof RemoteCamera) view.source.close();
   view.tile.remove();
+  if (view.kind === 'local') populateCameras().catch(() => {});
   render();
 }
 

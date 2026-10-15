@@ -2,7 +2,7 @@ import { medianPalmShape, type HandSkeleton } from '../calibration/bones';
 import type { CalibratableTracker, Calibrator } from '../calibration/calibrator';
 import { OneEuroFilter, type OneEuroOptions } from '../filter/oneEuro';
 import { boneLengths, NUM_BONES } from '../geometry/bones';
-import { essentialFromPose, mulVec3, transpose3 } from '../geometry/linalg';
+import { essentialFromPose, mul3, mulVec3, transpose3 } from '../geometry/linalg';
 import { median } from '../geometry/numeric';
 import { PALM_JOINTS } from '../geometry/skeleton';
 import { calibrateStereo, type StereoCalibration, type StereoCalibrationOptions } from '../stereo/calibrate';
@@ -44,6 +44,8 @@ export interface MultiViewOptions {
   refineSkeleton?: boolean;
   /** Minimum time between skeleton updates while running, ms. Default 5000. */
   refineIntervalMs?: number;
+  /** Clock for arrival times (performance.now() by default), for tests. */
+  now?: () => number;
 }
 
 export interface ViewStatus {
@@ -70,11 +72,18 @@ export interface MultiViewCalibrationResult {
 }
 
 const STORAGE_PREFIX = 'webhands:stereo:';
-/** How long a camera 0 frame waits for the other cameras before going out without them, ms. */
-const MAX_WAIT_MS = 120;
-const HISTORY_MS = 400;
-/** A camera counts as active if it delivered a frame this recently (camera 0's clock), ms. */
+/** Frames older than this (relative to the newest) are dropped from each camera's history, ms. */
+const HISTORY_MS = 1000;
+/** A camera counts as active if a frame from it arrived this recently, ms. */
 const ACTIVE_MS = 500;
+/** If camera 0 is silent this long, another camera drives the output, ms. */
+const DRIVER_TIMEOUT_MS = 300;
+/** Margin added to the slowest active camera's typical arrival delay before fusing anyway, ms. */
+const WAIT_MARGIN_MS = 30;
+/** Never wait longer than this for a slow camera, ms. */
+const MAX_WAIT_MS = 500;
+/** Tolerance when matching a camera's frame to an instant without a frame after it, ms. */
+const NEAREST_MS = 40;
 /** Triangulated frames this good feed the skeleton measurement. */
 const GOOD_MEDIAN_PX = 3;
 const GOOD_MAX_PX = 10;
@@ -100,11 +109,19 @@ export class MultiViewHandTracker implements HandTrackerBackend {
   calibrations: (StereoCalibration | null)[];
 
   private readonly options: MultiViewOptions;
+  private readonly now: () => number;
   private readonly listeners = new Set<HandFrameListener>();
   private readonly filters = new Map<Handedness, OneEuroFilter>();
   private readonly unsubscribes = new Map<ViewSource, () => void>();
-  private pending: TimedHands[] = [];
+  /** Instants (camera 0's clock) waiting to be fused: the driving camera's frame times. */
+  private pending: number[] = [];
+  /** Per camera: recent frames, timestamps on camera 0's clock. */
   private histories: TimedHands[][] = [];
+  /** Per camera: arrival time of its latest frame (this page's clock). */
+  private lastArrival: number[] = [];
+  /** Per camera: recent arrival delays (arrival − capture on camera 0's clock), ms. */
+  private lags: number[][] = [];
+  private flushTimer: ReturnType<typeof setInterval> | undefined;
   private started = false;
   private readonly skeletonSamples = { Left: [] as Float32Array[], Right: [] as Float32Array[] };
   /** Per view: triangulated hand size / that view's MediaPipe hand size. */
@@ -115,6 +132,7 @@ export class MultiViewHandTracker implements HandTrackerBackend {
   constructor(sources: ViewSource[], options: MultiViewOptions = {}) {
     this.sources = [...sources];
     this.options = options;
+    this.now = options.now ?? (() => performance.now());
     this.calibrations = this.sources.map((_, i) => (i ? options.calibrations?.[i] ?? null : null));
   }
 
@@ -142,16 +160,21 @@ export class MultiViewHandTracker implements HandTrackerBackend {
   async start(): Promise<void> {
     if (this.started) return;
     this.started = true;
+    // Fuse waiting frames even when no camera sends anything (deadlines).
+    this.flushTimer = setInterval(() => this.flush(), 50);
     // Sequentially: simultaneous getUserMedia prompts can confuse browsers.
     for (const source of this.sources) await this.attach(source);
   }
 
   stop(): void {
     this.started = false;
+    clearInterval(this.flushTimer);
     for (const unsubscribe of this.unsubscribes.values()) unsubscribe();
     this.unsubscribes.clear();
     this.pending = [];
     this.histories = [];
+    this.lastArrival = [];
+    this.lags = [];
     this.filters.clear();
     this.sources.forEach((s) => s.stop());
   }
@@ -168,21 +191,68 @@ export class MultiViewHandTracker implements HandTrackerBackend {
   }
 
   /**
-   * Remove a camera. Later cameras' indices shift down. Camera 0 (the
-   * reference) can only be removed when it is the only camera.
+   * Remove a camera; later cameras' indices shift down. Removing camera 0 (the
+   * reference) re-anchors to the first remaining calibrated camera (see
+   * `reanchor`), so the others keep working; output is then in that camera's
+   * frame. If no other camera is calibrated, the next camera simply becomes
+   * camera 0.
    */
   removeSource(source: ViewSource): void {
-    const index = this.sources.indexOf(source);
-    if (index < 0 || (index === 0 && this.sources.length > 1)) return;
+    let index = this.sources.indexOf(source);
+    if (index < 0) return;
+    if (index === 0) {
+      const next = this.calibrations.findIndex((c, i) => i > 0 && !!c);
+      if (next > 0) {
+        this.reanchor(next);
+        index = this.sources.indexOf(source);
+      }
+    }
     this.unsubscribes.get(source)?.();
     this.unsubscribes.delete(source);
     source.stop();
-    this.sources.splice(index, 1);
-    this.calibrations.splice(index, 1);
-    this.histories.splice(index, 1);
-    this.handScaleRatios.splice(index, 1);
-    // Re-subscribe so listeners carry the new indices.
-    for (const s of this.sources.slice(index)) this.subscribe(s);
+    for (const list of [this.sources, this.calibrations, this.histories, this.lastArrival, this.lags, this.handScaleRatios]) {
+      (list as unknown[]).splice(index, 1);
+    }
+    if (index === 0) this.calibrations = this.calibrations.map(() => null);
+    this.calibrations[0] = null;
+    this.pending = [];
+  }
+
+  /**
+   * Make calibrated camera `k` the reference (camera 0): every other camera's
+   * pose and time offset are re-expressed relative to it (and saved), and the
+   * old camera 0 becomes an ordinary camera. Output switches to camera k's frame.
+   */
+  reanchor(k: number): void {
+    const ck = this.calibrations[k];
+    if (k <= 0 || !ck) throw new Error(`Camera ${k} is not calibrated`);
+    // X_k = R_k·X_0 + t_k  ⇒  X_j = R_j·R_kᵀ·X_k + (t_j − R_j·R_kᵀ·t_k).
+    const Rkt = transpose3(ck.R);
+    const rebased = this.calibrations.map((c, j): StereoCalibration | null => {
+      if (j === k) return null;
+      const R = j === 0 ? Rkt : mul3(c ? c.R : IDENTITY, Rkt);
+      if (j !== 0 && !c) return null;
+      const t = j === 0 ? ZERO : c!.t;
+      const Rtk = mulVec3(R, ck.t);
+      return {
+        ...(c ?? ck),
+        R: Array.from(R),
+        t: [t[0] - Rtk[0], t[1] - Rtk[1], t[2] - Rtk[2]],
+        timeOffsetMs: (j === 0 ? 0 : c!.timeOffsetMs) - ck.timeOffsetMs,
+      };
+    });
+    const order = [k, ...this.sources.map((_, i) => i).filter((i) => i !== k)];
+    const reorder = <T>(list: T[]) => order.map((i) => list[i]);
+    const sources = reorder(this.sources);
+    this.sources.splice(0, this.sources.length, ...sources);
+    this.calibrations = reorder(rebased);
+    this.calibrations[0] = null;
+    this.histories = [];
+    this.lastArrival = [];
+    this.lags = [];
+    this.handScaleRatios = reorder(this.handScaleRatios);
+    this.pending = [];
+    this.calibrations.forEach((c, i) => c && saveStereo(this.pairKey(i), c));
   }
 
   /**
@@ -254,8 +324,10 @@ export class MultiViewHandTracker implements HandTrackerBackend {
     }
 
     // Measure the skeleton from the calibration frames, fused exactly as at runtime.
-    const histories = this.sources.map((_, i) => (i && this.calibrations[i] ? toHistory(samples[i], this.calibrations[i]!.timeOffsetMs) : []));
-    for (const frame of toHistory(samples[0], 0)) this.fuse(frame, histories);
+    const histories = this.sources.map((_, i) =>
+      i === 0 ? toHistory(samples[0], 0) : this.calibrations[i] ? toHistory(samples[i], this.calibrations[i]!.timeOffsetMs) : [],
+    );
+    for (const frame of histories[0]) this.fuse(frame.timestamp, histories);
     const skeletons = this.applySkeletons();
     return { views, skeletons };
   }
@@ -284,8 +356,7 @@ export class MultiViewHandTracker implements HandTrackerBackend {
       source,
       source.onFrame((hands, t) => {
         const i = this.sources.indexOf(source);
-        if (i === 0) this.onReference(hands, t);
-        else if (i > 0) this.onOther(i, hands, t);
+        if (i >= 0) this.onView(i, hands, t);
       }),
     );
   }
@@ -294,65 +365,93 @@ export class MultiViewHandTracker implements HandTrackerBackend {
     return `${this.sources[0].cameraId}|${this.sources[i].cameraId}`;
   }
 
-  private calibratedViews(): number[] {
-    const out: number[] = [];
+  /** Camera 0 plus every calibrated camera. */
+  private usableViews(): number[] {
+    const out = [0];
     for (let i = 1; i < this.sources.length; i++) if (this.calibrations[i]) out.push(i);
     return out;
   }
 
-  private onReference(hands: Hand3D[], timestamp: number) {
-    if (!this.calibratedViews().length) {
-      this.emit(hands.map((h) => ({ ...h, debug: { ...h.debug, source: 'view0', views: [0] } })), timestamp);
+  private onView(i: number, hands: Hand3D[], captureTime: number) {
+    if (i > 0 && !this.calibrations[i]) return;
+    const now = this.now();
+    if (this.usableViews().length < 2) {
+      // Nothing to fuse yet: camera 0 passes through.
+      if (i === 0) this.emit(hands.map((h) => ({ ...h, debug: { ...h.debug, source: 'view0', views: [0] } })), captureTime);
       return;
     }
-    this.pending.push({ timestamp, hands });
-    this.flush();
-  }
-
-  private onOther(i: number, hands: Hand3D[], captureTime: number) {
-    const cal = this.calibrations[i];
-    if (!cal) return;
-    // Store on camera 0's clock.
-    const timestamp = captureTime + cal.timeOffsetMs;
+    // On camera 0's clock.
+    const timestamp = captureTime + (i ? this.calibrations[i]!.timeOffsetMs : 0);
     const history = (this.histories[i] ??= []);
     history.push({ timestamp, hands: hands.map((h) => ({ ...h, timestamp })) });
     while (history.length && history[0].timestamp < timestamp - HISTORY_MS) history.shift();
+    this.lastArrival[i] = now;
+    const lags = (this.lags[i] ??= []);
+    lags.push(now - timestamp);
+    if (lags.length > 30) lags.shift();
+    if (i === this.driver(now)) this.pending.push(timestamp);
     this.flush();
   }
 
-  /** Process camera 0 frames once every active camera has caught up (or they waited too long). */
+  /** The camera whose frames set the output instants: camera 0 unless it has gone quiet. */
+  private driver(now: number): number {
+    for (const i of this.usableViews()) {
+      if (now - (this.lastArrival[i] ?? -Infinity) < DRIVER_TIMEOUT_MS) return i;
+    }
+    return 0;
+  }
+
+  /**
+   * Fuse waiting instants once every active camera has a frame at or after
+   * them, or once the slowest active camera's usual delay has passed.
+   */
   private flush() {
-    const newest = this.pending.at(-1)?.timestamp ?? -Infinity;
+    const now = this.now();
+    const active = this.usableViews().filter((i) => now - (this.lastArrival[i] ?? -Infinity) < ACTIVE_MS);
+    const wait = Math.min(
+      MAX_WAIT_MS,
+      Math.max(0, ...active.map((i) => percentile90(this.lags[i] ?? []))) + WAIT_MARGIN_MS,
+    );
     while (this.pending.length) {
-      const frame = this.pending[0];
-      const waiting = this.calibratedViews().some((i) => {
-        const latest = this.histories[i]?.at(-1)?.timestamp ?? -Infinity;
-        const active = latest > frame.timestamp - ACTIVE_MS;
-        return active && latest < frame.timestamp;
-      });
-      if (waiting && newest - frame.timestamp <= MAX_WAIT_MS) break;
+      const t = this.pending[0];
+      const behind = active.some((i) => (this.histories[i]?.at(-1)?.timestamp ?? -Infinity) < t);
+      if (behind && now < t + wait) break;
       this.pending.shift();
-      this.emit(this.fuse(frame, this.histories), frame.timestamp);
+      this.emit(this.fuse(t, this.histories), t);
     }
   }
 
-  private fuse(frame: TimedHands, histories: TimedHands[][]): Hand3D[] {
-    const views = this.calibratedViews();
-    const swapped = new Map(views.map((i) => [i, this.labelsSwapped(i, frame, histories[i] ?? [])]));
-    const sides = new Set<Handedness>(frame.hands.map((h) => h.handedness));
+  /** All hands at instant `t` (camera 0's clock) from every usable camera's history. */
+  private fuse(t: number, histories: TimedHands[][]): Hand3D[] {
+    const views = this.usableViews().filter((i) => histories[i]?.length);
+    // Each camera's view of each hand at t (interpolated), by its own labels.
+    const seen = new Map<number, Map<Handedness, { hand: Hand3D; landmarks: ArrayLike<number> }>>();
     for (const i of views) {
-      for (const h of nearest(histories[i] ?? [], frame.timestamp)) sides.add(swapped.get(i) ? other(h.handedness) : h.handedness);
+      const byLabel = new Map<Handedness, { hand: Hand3D; landmarks: ArrayLike<number> }>();
+      for (const side of ['Left', 'Right'] as const) {
+        const b = interpolateLandmarks(histories[i], side, t, 80, NEAREST_MS);
+        if (b) byLabel.set(side, b);
+      }
+      if (byLabel.size) seen.set(i, byLabel);
     }
+    // Labels can differ between cameras; with two hands, check against the
+    // first camera that sees both whether swapping fits the geometry better.
+    const reference = [...seen.entries()].find(([, m]) => m.size === 2)?.[0];
+    const swapped = new Set<number>();
+    if (reference !== undefined) {
+      for (const [i, m] of seen) if (i !== reference && m.size === 2 && this.labelsSwapped(reference, i, seen)) swapped.add(i);
+    }
+    const sides = new Set<Handedness>();
+    for (const [i, m] of seen) for (const side of m.keys()) sides.add(swapped.has(i) ? other(side) : side);
+
     const out: Hand3D[] = [];
     for (const side of sides) {
       const observations: { view: number; hand: Hand3D; landmarks: ArrayLike<number> }[] = [];
-      const a = frame.hands.find((h) => h.handedness === side);
-      if (a?.debug?.landmarks2d) observations.push({ view: 0, hand: a, landmarks: a.debug.landmarks2d });
-      for (const i of views) {
-        const b = interpolateLandmarks(histories[i] ?? [], swapped.get(i) ? other(side) : side, frame.timestamp);
-        if (b) observations.push({ view: i, hand: b.hand, landmarks: b.landmarks });
+      for (const [i, m] of seen) {
+        const b = m.get(swapped.has(i) ? other(side) : side);
+        if (b) observations.push({ view: i, ...b });
       }
-      const fused = this.triangulateHand(side, observations, frame.timestamp);
+      const fused = this.triangulateHand(side, observations, t);
       if (fused) {
         out.push(fused);
         continue;
@@ -365,7 +464,7 @@ export class MultiViewHandTracker implements HandTrackerBackend {
         ...best.hand,
         handedness: side,
         joints: cal ? toCamera0(best.hand.joints, cal) : best.hand.joints,
-        timestamp: frame.timestamp,
+        timestamp: t,
         debug: { ...best.hand.debug, source: `view${best.view}`, views: [best.view] },
       });
     }
@@ -401,7 +500,7 @@ export class MultiViewHandTracker implements HandTrackerBackend {
           timestamp,
           debug: {
             ...first.debug,
-            landmarks2d: obs[0].view === 0 ? obs[0].landmarks as Float32Array : undefined,
+            landmarks2d: obs[0].view === 0 ? Float32Array.from(obs[0].landmarks) : undefined,
             reprojectionError: error,
             source: 'stereo',
             views: obs.map((o) => o.view),
@@ -428,23 +527,35 @@ export class MultiViewHandTracker implements HandTrackerBackend {
     };
   }
 
-  /** With two hands in both camera 0 and camera i, does swapping camera i's labels fit the geometry much better? */
-  private labelsSwapped(i: number, frame: TimedHands, history: TimedHands[]): boolean {
-    if (frame.hands.length < 2) return false;
-    const cal = this.calibrations[i]!;
-    const E = essentialFromPose(cal.R, cal.t);
-    const k0 = this.sources[0].intrinsics!, k1 = this.sources[i].intrinsics!;
+  /** Pose of camera b relative to camera a (X_b = R·X_a + t), from both cameras' poses relative to camera 0. */
+  private relativePose(a: number, b: number): { R: ArrayLike<number>; t: ArrayLike<number> } {
+    const ca = a ? this.calibrations[a]! : { R: IDENTITY, t: ZERO };
+    const cb = b ? this.calibrations[b]! : { R: IDENTITY, t: ZERO };
+    const R = mul3(cb.R, transpose3(ca.R));
+    const Rta = mulVec3(R, ca.t);
+    return { R, t: [cb.t[0] - Rta[0], cb.t[1] - Rta[1], cb.t[2] - Rta[2]] };
+  }
+
+  /** With two hands in cameras a and b, does swapping b's labels fit the epipolar geometry much better? */
+  private labelsSwapped(
+    a: number,
+    b: number,
+    seen: Map<number, Map<Handedness, { landmarks: ArrayLike<number> }>>,
+  ): boolean {
+    const { R, t } = this.relativePose(a, b);
+    const E = essentialFromPose(R, t);
+    const ka = this.sources[a].intrinsics!, kb = this.sources[b].intrinsics!;
     const cost = (swap: boolean) => {
       let total = 0;
-      for (const a of frame.hands) {
-        const b = interpolateLandmarks(history, swap ? other(a.handedness) : a.handedness, frame.timestamp);
-        const la = a.debug?.landmarks2d;
-        if (!b || !la) return Infinity;
+      for (const side of ['Left', 'Right'] as const) {
+        const la = seen.get(a)!.get(side)?.landmarks;
+        const lb = seen.get(b)!.get(swap ? other(side) : side)?.landmarks;
+        if (!la || !lb) return Infinity;
         for (let j = 0; j < NUM_JOINTS; j++) {
           total += sampsonDistance(
             E,
-            (la[j * 2] - k0.cx) / k0.fx, (la[j * 2 + 1] - k0.cy) / k0.fy,
-            (b.landmarks[j * 2] - k1.cx) / k1.fx, (b.landmarks[j * 2 + 1] - k1.cy) / k1.fy,
+            (la[j * 2] - ka.cx) / ka.fx, (la[j * 2 + 1] - ka.cy) / ka.fy,
+            (lb[j * 2] - kb.cx) / kb.fx, (lb[j * 2 + 1] - kb.cy) / kb.fy,
           );
         }
       }
@@ -562,10 +673,10 @@ function toHistory(samples: Hand3D[], offsetMs: number): TimedHands[] {
   return [...frames.entries()].sort((a, b) => a[0] - b[0]).map(([timestamp, hands]) => ({ timestamp, hands }));
 }
 
-function nearest(history: TimedHands[], time: number): Hand3D[] {
-  let best: TimedHands | undefined;
-  for (const f of history) if (!best || Math.abs(f.timestamp - time) < Math.abs(best.timestamp - time)) best = f;
-  return best && Math.abs(best.timestamp - time) < 50 ? best.hands : [];
+function percentile90(values: number[]): number {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.floor(0.9 * (sorted.length - 1))];
 }
 
 const other = (side: Handedness): Handedness => (side === 'Left' ? 'Right' : 'Left');

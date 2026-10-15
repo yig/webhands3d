@@ -43,30 +43,58 @@ class FakeSource implements ViewSource {
   }
 }
 
-/** Frame events from every camera, in arrival order. `hidden(view, t)` hides the hand from a camera. */
-function events(durationMs: number, hidden: (view: number, t: number) => boolean = () => false, seed = 5) {
-  const r = rng(seed);
+export interface EventOptions {
+  /** Hide a hand from a camera at time t. */
+  hidden?: (view: number, t: number, side: 'Left' | 'Right') => boolean;
+  /** Include a left hand (mirror image, 20 cm to the right of camera 0's view of the right hand). */
+  leftHand?: boolean;
+  /** Per camera: how long after capture its frames arrive, ms. */
+  delays?: number[];
+  seed?: number;
+}
+
+const MIRRORED = HAND.map((v, i) => (i % 3 === 0 ? -v : v));
+
+/** One camera's view of one hand at true time t. */
+function observe(cam: Cam, side: 'Left' | 'Right', t: number, r: () => number, reported: number): Hand3D {
+  const { rotation, translation } = handAt(t);
+  const model = side === 'Right' ? HAND : MIRRORED;
+  const offset = side === 'Right' ? translation : Float64Array.of(translation[0] - 0.2, translation[1], translation[2]);
+  const joints = transformPoints(model, { rotation, translation: offset });
+  const inView = new Float32Array(joints.length);
+  for (let i = 0; i < joints.length; i += 3) {
+    const p = mulVec3(cam.R, [joints[i], joints[i + 1], joints[i + 2]]);
+    inView.set([p[0] + cam.t[0], p[1] + cam.t[1], p[2] + cam.t[2]], i);
+  }
+  const image = projectPoints(inView, cam.k).map((v) => v + r() * 1.0);
+  const size = 1 + r() * 0.1;
+  const R = Float64Array.from({ length: 9 }, (_, i) => {
+    const [row, col] = [Math.floor(i / 3), i % 3];
+    return cam.R[row * 3] * rotation[col] + cam.R[row * 3 + 1] * rotation[3 + col] + cam.R[row * 3 + 2] * rotation[6 + col];
+  });
+  const world = transformPoints(model, { rotation: R, translation: new Float64Array(3) }).map((v) => v * size);
+  return { handedness: side, joints: inView, confidence: 1, timestamp: reported, debug: { landmarks2d: image, worldLandmarks: world } };
+}
+
+/** The left hand's true joints (camera 0 frame) at time t. */
+export function leftAt(t: number) {
+  const { rotation, translation } = handAt(t);
+  return transformPoints(MIRRORED, { rotation, translation: Float64Array.of(translation[0] - 0.2, translation[1], translation[2]) });
+}
+
+/** Frame events from every camera, in arrival order (`at`, camera 0's clock). */
+function events(durationMs: number, options: EventOptions | ((view: number, t: number) => boolean) = {}) {
+  const o: EventOptions = typeof options === 'function' ? { hidden: (v, t) => options(v, t) } : options;
+  const r = rng(o.seed ?? 5);
   const out: { at: number; view: number; hands: Hand3D[]; reported: number }[] = [];
   CAMS.forEach((cam, view) => {
     for (let t = cam.phaseMs; t < durationMs; t += 1000 / 30) {
-      const { rotation, joints } = handAt(t);
-      const inView = new Float32Array(joints.length);
-      for (let i = 0; i < joints.length; i += 3) {
-        const p = mulVec3(cam.R, [joints[i], joints[i + 1], joints[i + 2]]);
-        inView.set([p[0] + cam.t[0], p[1] + cam.t[1], p[2] + cam.t[2]], i);
-      }
-      const image = projectPoints(inView, cam.k).map((v) => v + r() * 1.0);
-      const size = 1 + r() * 0.1;
-      const R = Float64Array.from({ length: 9 }, (_, i) => {
-        const [row, col] = [Math.floor(i / 3), i % 3];
-        return cam.R[row * 3] * rotation[col] + cam.R[row * 3 + 1] * rotation[3 + col] + cam.R[row * 3 + 2] * rotation[6 + col];
-      });
-      const world = transformPoints(HAND, { rotation: R, translation: new Float64Array(3) }).map((v) => v * size);
       const reported = t - cam.offsetMs;
-      const hands: Hand3D[] = hidden(view, t)
-        ? []
-        : [{ handedness: 'Right', joints: inView, confidence: 1, timestamp: reported, debug: { landmarks2d: image, worldLandmarks: world } }];
-      out.push({ at: t, view, hands, reported });
+      const hands: Hand3D[] = [];
+      for (const side of o.leftHand ? (['Right', 'Left'] as const) : (['Right'] as const)) {
+        if (!o.hidden?.(view, t, side)) hands.push(observe(cam, side, t, r, reported));
+      }
+      out.push({ at: t + (o.delays?.[view] ?? 0), view, hands, reported });
     }
   });
   return out.sort((a, b) => a.at - b.at);
@@ -120,6 +148,72 @@ describe('MultiViewHandTracker', () => {
         Math.hypot(h.joints[j * 3] - truth[j * 3], h.joints[j * 3 + 1] - truth[j * 3 + 1], h.joints[j * 3 + 2] - truth[j * 3 + 2]));
     });
     expect(median(errors)).toBeLessThan(0.005);
+  });
+
+  it('shows a hand only the other cameras see, even when their frames arrive late', async () => {
+    let clock = 0;
+    const { sources, tracker } = setup({
+      calibrations: [null, trueCalibration(1), trueCalibration(2)],
+      refineSkeleton: false,
+      now: () => clock,
+    });
+    await tracker.start();
+    const out: Hand3D[] = [];
+    tracker.onFrame((hands) => out.push(...hands));
+    const evs = events(3000, { leftHand: true, hidden: (view, _t, side) => view === 0 && side === 'Left', delays: [20, 150, 150] });
+    for (const e of evs) {
+      clock = e.at;
+      sources[e.view].emit(e.hands, e.reported);
+    }
+    const left = out.filter((h) => h.handedness === 'Left' && h.timestamp > 500);
+    const right = out.filter((h) => h.handedness === 'Right' && h.timestamp > 500);
+    expect(left.length).toBeGreaterThan(right.length * 0.9);
+    expect(left.every((h) => h.debug?.views?.join() === '1,2')).toBe(true);
+    expect(right.every((h) => h.debug?.views?.length === 3)).toBe(true);
+    const errors = left.flatMap((h) => {
+      const truth = leftAt(h.timestamp);
+      return Array.from({ length: 21 }, (_, j) =>
+        Math.hypot(h.joints[j * 3] - truth[j * 3], h.joints[j * 3 + 1] - truth[j * 3 + 1], h.joints[j * 3 + 2] - truth[j * 3 + 2]));
+    });
+    expect(median(errors)).toBeLessThan(0.005);
+  });
+
+  it('keeps tracking from the other cameras when camera 0 stops sending frames', async () => {
+    let clock = 0;
+    const { sources, tracker } = setup({
+      calibrations: [null, trueCalibration(1), trueCalibration(2)],
+      refineSkeleton: false,
+      now: () => clock,
+    });
+    await tracker.start();
+    const out: Hand3D[] = [];
+    tracker.onFrame((hands) => out.push(...hands));
+    for (const e of events(3000)) {
+      if (e.view === 0 && e.at > 1500) continue; // camera 0 freezes
+      clock = e.at;
+      sources[e.view].emit(e.hands, e.reported);
+    }
+    const late = out.filter((h) => h.timestamp > 1900);
+    expect(late.length).toBeGreaterThan(25);
+    expect(late.every((h) => h.debug?.views?.join() === '1,2')).toBe(true);
+  });
+
+  it('re-anchors to another camera when camera 0 is removed', async () => {
+    const { sources, tracker } = setup({ calibrations: [null, trueCalibration(1), trueCalibration(2)], refineSkeleton: false });
+    await tracker.start();
+    tracker.removeSource(sources[0]);
+    expect(tracker.sources).toEqual([sources[1], sources[2]]);
+    // Camera 2's pose is now relative to camera 1.
+    const cal = tracker.calibrations[1]!;
+    const truthBaseline = Math.hypot(0.35 - -0.3, -0.03 - 0.05, 0.05 - 0.08);
+    expect(Math.hypot(...cal.t)).toBeCloseTo(truthBaseline, 6);
+    expect(cal.timeOffsetMs).toBeCloseTo(CAMS[2].offsetMs - CAMS[1].offsetMs, 6);
+    const out: Hand3D[] = [];
+    tracker.onFrame((hands) => out.push(...hands));
+    for (const e of events(1500)) if (e.view > 0) sources[e.view].emit(e.hands, e.reported);
+    // After the first frame (sent before the other camera had reported), all triangulated.
+    expect(out.length).toBeGreaterThan(25);
+    expect(out.slice(1).every((h) => h.debug?.source === 'stereo')).toBe(true);
   });
 
   it('keeps refining the skeleton while running', async () => {

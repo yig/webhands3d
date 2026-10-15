@@ -297,7 +297,12 @@ detecting camera needs no information about the displaying screen. Simulated
 pattern: 1023 px vs true 1024. In the demo: phone "Show pattern" + the
 laptop tile's "Screen" calibrates the laptop camera; "Show pattern on this
 screen" + the phone's "Calibrate from screen" calibrates the phone camera;
-`/pattern.html` shows the pattern on any device. Calibrating intrinsics is
+`/pattern.html` shows the pattern on any device. While collecting,
+`calibrateFromPattern` reports each frame's state — `not-seen`, `too-flat`,
+`same-view` or `accepted` — with advice (`PATTERN_ADVICE`), and by default
+draws the detected dots, an "n / 8 views" count, a progress bar and the
+advice over the video (`feedback`, honouring a mirrored display); it is
+cancellable with an AbortSignal (the demos' button turns into Stop). Calibrating intrinsics is
 independent of where the camera is, so cameras can be moved afterwards (then
 recalibrate the camera positions).
 

@@ -92,3 +92,13 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 nav { font-size: 12px; margin-bottom: 8px; }
 nav a { color: var(--accent); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); grid-auto-rows: minmax(180px, 1fr); gap: 12px; min-height: 0; overflow: auto; }
+.tile-bar {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 1; display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+  font-size: 11px; color: #fff; background: rgba(0, 0, 0, 0.55); padding: 4px 6px;
+}
+.tile-bar input { width: 52px; font-size: 11px; }
+.tile-bar button { font-size: 11px; padding: 1px 6px; }
+.remote-canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+#qr { display: block; margin: 6px 0; background: #fff; border-radius: 6px; }
+.url { font: 11px ui-monospace, monospace; word-break: break-all; }

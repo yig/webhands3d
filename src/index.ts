@@ -102,3 +102,15 @@ export {
   type RelativePose,
 } from './stereo/epipolar';
 export { groupByFrame, interpolateLandmarks, type TimedHands } from './stereo/pairing';
+export {
+  RemoteCamera,
+  RemoteCameraSender,
+  type RemoteCameraOptions,
+  type RemoteSenderOptions,
+  type SenderSource,
+} from './remote/camera';
+export { ClockSync } from './remote/clock';
+export { dataChannelLink, memoryLinkPair, type Link } from './remote/link';
+export { PROTOCOL_VERSION, type HostToRemote, type RemoteToHost, type WireHand } from './remote/protocol';
+export { httpSignaling, type Signaling, type SignalMessage } from './remote/signaling';
+export { acceptRemotes, connectToHost, randomId, type WebRtcOptions } from './remote/webrtc';

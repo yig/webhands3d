@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="data:," />
+    <title>webhands cameras</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main>
+      <div class="tiles" id="tiles"></div>
+      <div class="view" id="scene"></div>
+      <aside>
+        <nav><a href="./index.html">One camera</a> · Several cameras</nav>
+        <h1>webhands · cameras</h1>
+        <p class="hint">Any number of cameras: this computer's, and phones joining over WebRTC.
+          The first camera is the reference. Put cameras 20–60 cm apart, all seeing where your
+          hands will be. Turn off Center Stage (macOS Video Effects): it changes the camera geometry.</p>
+
+        <h2>Cameras on this computer</h2>
+        <label>Camera <select id="localCamera"></select></label>
+        <button id="addLocal" class="primary">Add camera</button>
+
+        <h2>Phones</h2>
+        <p class="hint" id="phoneHint">Scan with a phone on the same network to add it as a camera.</p>
+        <canvas id="qr"></canvas>
+        <div class="url" id="joinUrl"></div>
+
+        <h2>1 · Each camera's field of view</h2>
+        <p class="hint">Edit the FOV on each camera tile, or click "A4" there and click the corners of a
+          sheet of A4 held tilted ~45° (more accurate; phones do this on their own screen).</p>
+
+        <h2>2 · Hand size (scale)</h2>
+        <p class="hint">Hold a credit card by its long edge between thumb tip and index fingertip, facing the first camera.</p>
+        <button id="handSize">Calibrate hand size</button>
+
+        <h2>3 · Camera positions</h2>
+        <p class="hint">Hold up one open hand where the cameras see it. Move it slowly through the whole shared
+          space for 12 s: near and far, side to side, turning it. Also measures your hand's bone lengths.</p>
+        <button id="calibrate" class="primary">Calibrate cameras (12 s)</button>
+        <p class="hint"><button id="reset">Reset camera positions</button></p>
+
+        <div id="status"></div>
+        <h2>Tracking</h2>
+        <div id="readout">Add a camera to start.</div>
+      </aside>
+    </main>
+    <script type="module" src="./cameras.ts"></script>
+  </body>
+</html>

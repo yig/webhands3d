@@ -30,10 +30,12 @@ calibrate using objects you probably have (no ruler needed):
 
 Calibration is saved per camera in `localStorage`.
 
-Two cameras (e.g. laptop + iPhone via Continuity Camera): open `/stereo.html`
-from the demo, pick both cameras, then calibrate each camera's field of view,
-the hand size, and the camera pair (move one hand through the shared view for
-12 s). Turn off Center Stage.
+Several cameras: open `/cameras.html`, add this computer's cameras, and/or join
+phones by scanning the QR code (phones need HTTPS: run `npm run dev:lan` and open
+the printed `https://` network address; accept the self-signed certificate once).
+Then set each camera's field of view, calibrate the hand size, and calibrate the
+camera positions by moving one hand through the shared view for 12 s. That also
+measures your hand's bone lengths for every camera. Turn off Center Stage.
 
 ## Library
 
@@ -76,21 +78,27 @@ console.log(cal.status.missing); // [] when fully calibrated
 Objects: `KNOWN_LENGTHS` (card edges, AA/AAA batteries) and `KNOWN_RECTANGLES`
 (A4, US Letter, card, US/€5 banknotes), or pass your own sizes.
 
-### Two cameras
+### Several cameras
 
 ```ts
-import { MonocularHandTracker, StereoHandTracker } from 'webhands';
+import { MonocularHandTracker, MultiViewHandTracker, RemoteCamera, acceptRemotes, httpSignaling } from 'webhands';
 
-const a = new MonocularHandTracker({ deviceId: laptopCamId });
-const b = new MonocularHandTracker({ deviceId: phoneCamId });
-const stereo = new StereoHandTracker([a, b]);
-stereo.onFrame((hands) => { /* joints in camera A's frame; hand.debug.source = 'stereo' | 'view0' | 'view1' */ });
-await stereo.start();
-if (!stereo.status.calibrated) await stereo.calibrate({ onProgress }); // move one hand around, 12 s
+const tracker = new MultiViewHandTracker([
+  new MonocularHandTracker({ deviceId: laptopCamId }),   // camera 0: the reference frame
+  new MonocularHandTracker({ deviceId: secondCamId }),
+]);
+tracker.onFrame((hands) => { /* joints in camera 0's frame; hand.debug.views = cameras used */ });
+await tracker.start();
+
+// Phones join over WebRTC (they run RemoteCameraSender; see demo/remote.ts).
+acceptRemotes(httpSignaling(location.origin, room), (link) => tracker.addSource(new RemoteCamera(link)));
+
+await tracker.calibrate({ onProgress }); // move one hand around, 12 s; also measures the skeleton
 ```
 
 ## Scripts
 
 - `npm run dev`: demo dev server
+- `npm run dev:lan`: demo over HTTPS on the local network (for phones)
 - `npm test`: unit tests
 - `npm run build`: library to `dist/`

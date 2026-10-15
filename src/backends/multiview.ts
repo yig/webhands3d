@@ -167,10 +167,13 @@ export class MultiViewHandTracker implements HandTrackerBackend {
     return this.sources.length - 1;
   }
 
-  /** Remove a camera (not camera 0). Later cameras' indices shift down. */
+  /**
+   * Remove a camera. Later cameras' indices shift down. Camera 0 (the
+   * reference) can only be removed when it is the only camera.
+   */
   removeSource(source: ViewSource): void {
     const index = this.sources.indexOf(source);
-    if (index <= 0) return;
+    if (index < 0 || (index === 0 && this.sources.length > 1)) return;
     this.unsubscribes.get(source)?.();
     this.unsubscribes.delete(source);
     source.stop();

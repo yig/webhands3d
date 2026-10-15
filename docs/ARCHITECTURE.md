@@ -16,7 +16,7 @@ in metres, in a known coordinate frame, at camera frame rate.
 | **RGBD webcam via getUserMedia** | Not practical. The Media Capture Depth Stream Extensions (RealSense etc.) were abandoned; Safari does not expose iPhone TrueDepth/LiDAR to the web. A native helper streaming depth over WebSocket would work but breaks "no special setup". |
 | **Monocular: MediaPipe + PnP** | **Implemented (phase 1).** MediaPipe Hand Landmarker already returns metric `worldLandmarks` (hand shape, origin at the hand's centre) alongside 2D image landmarks. Solving perspective-n-point with known intrinsics places the hand in the camera frame. Needs a calibration of hand size and focal length. Weakest along the viewing axis. |
 | **Stereo, one tab** | **Implemented (phase 2).** Chrome opens two cameras at once (verified headless with fake devices); macOS Continuity Camera exposes an iPhone as an ordinary webcam. Two monocular trackers, frames paired by capture time, joints triangulated. Self-calibrated from hand keypoints (essential matrix; hand size / skeleton fixes scale; time offset estimated). See *Stereo pipeline*. |
-| **Stereo, two tabs/devices** | Planned (phase 3). Each device runs MediaPipe and sends 2D landmarks (~few hundred bytes/frame) over a WebRTC data channel; signaling via QR code or small broker; needs clock sync. Covers Windows/Android. |
+| **Remote cameras over WebRTC, N cameras** | **Implemented (phase 3).** Each phone/tab runs MediaPipe and sends 2D + world landmarks, intrinsics and capture times over a WebRTC data channel (~2 KB/frame); joins by QR code; signaling through a mailbox on the dev server; ping/pong clock sync. Generalised to any number of local and remote cameras (`MultiViewHandTracker`). See *Multi-view pipeline* and *Remote cameras*. |
 | Monocular depth nets, hand-mesh nets (HaMeR, WiLoR) | Too heavy / not metric enough for real-time browser use right now. Possible later as priors. |
 
 ## Module map
@@ -39,12 +39,22 @@ src/
   calibration/calibrator.ts Calibrator: runs steps against a tracker, applies + saves results (headless)
   ui/pickCorners.ts        freeze-frame overlay to click a rectangle's corners (optional UI helper)
   backends/monocular.ts    MonocularHandTracker (MediaPipe + solvePose + smoothing)
-  backends/stereo.ts       StereoHandTracker: fuses two StereoSources (e.g. two MonocularHandTrackers)
+  backends/assemble.ts     detections → Hand3D (placement + smoothing), shared by local and remote cameras
+  backends/multiview.ts    MultiViewHandTracker: N ViewSources, triangulation, skeleton measurement
+  backends/stereo.ts       StereoHandTracker = MultiViewHandTracker (two-camera alias)
   geometry/linalg.ts       symmetric eigen (Jacobi), 3×3 SVD, small matrix helpers
   stereo/epipolar.ts       8-point + RANSAC essential matrix, decomposition, LM refinement, triangulation
   stereo/pairing.ts        group samples into frames; interpolate a view's landmarks to a time
   stereo/calibrate.ts      calibrateStereo: time offset + relative pose + metric scale from hand frames
-demo/                      Vite dev pages: index.html (one camera), stereo.html (two cameras);
+  remote/link.ts           Link: message pipe (WebRTC data channel, in-memory pair for tests)
+  remote/protocol.ts       remote ↔ host messages (hello, intrinsics, frame, ping/pong, calibration)
+  remote/clock.ts          ClockSync: NTP-style offset from the lowest-delay round trip
+  remote/camera.ts         RemoteCamera (host side, a ViewSource) and RemoteCameraSender (phone side)
+  remote/signaling.ts      Signaling interface + httpSignaling client (mailbox protocol)
+  remote/webrtc.ts         connectToHost / acceptRemotes: WebRTC setup over Signaling, non-trickle ICE
+tools/signaling.ts         Vite plugin serving the signaling mailbox (+ LAN address discovery)
+demo/                      Vite dev pages: index.html (one camera), cameras.html (any number of
+                           local + phone cameras, QR join), remote.html (phone side);
                            shared.ts (three.js scene, 2D overlay), style.css
                            (calibration uses only the public Calibrator / pickCorners API)
 test/                      vitest unit tests; test/sim.ts simulates MediaPipe errors (size, flattened z);
@@ -241,59 +251,118 @@ lengths to < 6 % RMS even with z × 0.5.
 Without calibration: s = 1 (MediaPipe's average hand) and a 60° horizontal FOV.
 Lateral position error scales with focal error; depth error scales with both.
 
-## Stereo pipeline
+## Multi-view pipeline
 
-`new StereoHandTracker([trackerA, trackerB])`. Each source is a `StereoSource`
-(a `CalibratableTracker` with start/stop) — normally a `MonocularHandTracker`,
-later a remote (WebRTC) view. Sources keep their own per-camera calibration
-(intrinsics, hand size, skeleton) via their `calibrator`. Output is in camera
-A's (camera 0's) frame, so it is drop-in compatible with the monocular output.
+`new MultiViewHandTracker([cam0, cam1, …])` (`StereoHandTracker` is the same
+class). Each camera is a `ViewSource` (a `CalibratableTracker` with start/stop
+and optionally a `calibrator`): a local `MonocularHandTracker` or a
+`RemoteCamera`. Cameras can be added and removed while running
+(`addSource` / `removeSource`). **Camera 0 is the reference**: output is in its
+frame and on its clock, so it is drop-in compatible with monocular output. Each
+camera keeps its own per-camera calibration (intrinsics, hand size, skeleton).
 
-**Calibration** (`stereo.calibrate()`, 12 s, one hand moving through the shared
-view at varied depths; `calibrateStereo` does the math):
-1. *Time offset* — the two cameras' capture clocks can differ (Continuity
-   Camera adds latency). For offsets −200…200 ms (10 ms, then 2 ms steps),
-   camera B's landmarks are interpolated to camera A's frame times and a
-   RANSAC essential matrix is fit; the offset with the lowest median Sampson
-   distance wins. (A moving hand makes the offset observable.)
-2. *Relative pose* — at that offset: 8-point essential matrix in RANSAC
-   (samples drawn from distinct frames, 4 px threshold) → the decomposition
-   with points in front of both cameras → Levenberg–Marquardt on Sampson
-   distances (rotation + translation direction).
-3. *Metric scale* — triangulate with unit baseline; scale = median of
-   (true bone length / triangulated bone length), with true lengths from camera
-   A's calibrated skeleton, else hand size × MediaPipe's median.
-   Stored per camera pair (`webhands:stereo:<idA>|<idB>`).
+**Calibration** (`tracker.calibrate()`, 12 s, one hand moving through the shared
+view at varied depths). Every other camera is calibrated **pairwise against
+camera 0** (`calibrateStereo`), so each must share some view with camera 0;
+pairs are stored separately (`webhands:stereo:<id0>|<idi>`), so adding a camera
+doesn't invalidate the others. Per pair:
+1. *Time offset* — coarse: for offsets −200…200 ms (10 ms steps), camera i's
+   landmarks are interpolated to camera 0's frame times and a RANSAC essential
+   matrix is fit; lowest median Sampson distance wins. Fine: ±60 ms around it,
+   the offset that keeps the **triangulated hand size most constant** (MAD of
+   log size). A timing error shifts points along the hand's motion; where that
+   is along the epipolar lines the epipolar fit can't see it, but it changes
+   triangulated depth, so the hand appears to grow and shrink. (This fixed a
+   20 ms error for a camera on the other side of the hand.)
+2. *Relative pose* — 8-point essential matrix in RANSAC (samples from distinct
+   frames, 4 px) → decomposition with points in front of both cameras →
+   Levenberg–Marquardt on Sampson distances.
+3. *Metric scale* — triangulated (unit baseline) bone lengths vs. camera 0's
+   calibrated skeleton, else hand size × MediaPipe's median.
+Then the collected frames are fused exactly as at runtime to **measure the
+skeleton** (below).
 
-**Per frame**:
-1. Camera A frames wait (≤ 120 ms) until camera B has a frame at or after the
-   same instant; camera B's 2D landmarks are linearly interpolated to camera
-   A's capture time (on A's clock, via the offset). Latency ≤ ~1 frame.
-2. Hands matched by handedness; with two hands in both views, the swapped
-   labelling is used if it fits the epipolar geometry much better.
-3. Each joint: linear triangulation + Gauss–Newton on pixel reprojection error
-   in both views.
-4. If the median joint error exceeds 12 px (views disagree, e.g. occlusion or a
-   MediaPipe failure in one view), or the hand is in one view only, the hand
-   comes from that view's single-camera 3D (camera B's mapped into camera A's
-   frame). `debug.source` says which: `stereo`, `view0`, `view1`.
-5. One Euro filter per hand. Before calibration, camera A passes through.
+**Per frame** (driven by camera 0's frames):
+1. Wait (≤ 120 ms) until every active calibrated camera has a frame at or after
+   the same instant; interpolate each camera's 2D landmarks to camera 0's
+   capture time (via its offset). Latency ≤ ~1 frame.
+2. Match hands by handedness; per camera, use swapped labels if that fits the
+   epipolar geometry with camera 0 much better (two hands in both).
+3. Triangulate each joint from **all cameras that see the hand** (N-view DLT +
+   Gauss–Newton on pixel error, `triangulateViews`). Camera 0 need not see it.
+4. If the median joint error exceeds 12 px: with 3+ cameras, drop the camera
+   that disagrees most and retry; otherwise (or with one camera) use the most
+   confident camera's single-view 3D, mapped into camera 0's frame.
+   `debug.source` is `stereo` (triangulated) or `view<i>`; `debug.views` lists
+   the cameras used.
+5. One Euro filter per hand. Before any calibration, camera 0 passes through.
 
-**Simulation** (`test/stereoSim.ts`: 1280×720 60° + 1920×1080 70° cameras,
-35 cm apart and turned inward, hand on a smooth path 40–80 cm away, 1.5 px
-noise, camera B clock 60 ms behind):
+**Skeleton measurement.** Triangulated hands give each bone's true 3D length
+directly, with no foreshortening ambiguity and no reliance on MediaPipe's z.
+Frames with median joint error < 3 px and max < 10 px are buffered (last 600
+per hand). Each bone's length is the median over the buffer; the palm template
+is the Kabsch-aligned median of the 5 palm joints. The result is given to
+**every** camera (saved through its calibrator), so any camera's single-view
+fallback uses the skeleton placement with measured proportions. Cameras without
+a calibrated hand size also get one: the median of triangulated hand size / that
+camera's MediaPipe hand size. This happens at calibration and then every 5 s
+while running (`refineSkeleton`, default on; `refineIntervalMs`). The overall
+size still comes from camera 0's hand size or skeleton; triangulation fixes
+proportions, not the metric scale. (A fully independent scale would need a
+known baseline or a known-size object seen by two cameras; not implemented.)
+
+## Remote cameras
+
+A phone (or another tab/computer) joins as a camera:
+
+- **Phone side** (`demo/remote.html`): a `MonocularHandTracker` on its camera
+  plus a `RemoteCameraSender`, which sends `hello` (stable camera id = random
+  device token + local camera id, and a label), `intrinsics` (again when they
+  change, e.g. after the phone's own FOV / A4 calibration), and per frame its
+  capture time (phone clock), and each hand's handedness, confidence, 2D
+  landmarks (0.1 px) and world landmarks (0.01 mm). JSON, ~2 KB/frame. It
+  answers clock pings and applies calibration the host measured (hand size,
+  skeleton) to its own tracker.
+- **Host side**: `RemoteCamera` is a `ViewSource`. It converts capture times to
+  the host clock with `ClockSync` (pings every 300 ms ×10, then every 1 s;
+  offset from the lowest-delay round trip of the last 20), and places hands
+  in 3D **on the host** with the same `HandAssembler` as a local camera, using
+  hand size / skeleton stored on the host under `remote:<id>`. Closes after 5 s
+  of silence. The pair time-offset search still runs on top of clock sync and
+  absorbs the remaining pipeline latency difference.
+- **Connection**: `connectToHost` (phone, offerer) / `acceptRemotes` (host).
+  Non-trickle ICE, so signaling is one offer and one answer through a
+  `Signaling` mailbox. `httpSignaling` speaks a tiny HTTP long-poll protocol
+  served by `tools/signaling.ts` (a Vite plugin; any server implementing it
+  works). No ICE servers by default: works on one local network; pass
+  `iceServers` (STUN/TURN) otherwise.
+- **Joining**: the host page shows a QR code for
+  `https://<LAN address>/remote.html?room=<room>` (room id remembered per host
+  browser). Phones need HTTPS for camera access: `npm run dev:lan` serves the
+  demo over HTTPS with a self-signed certificate on all interfaces (phones show
+  a certificate warning to accept once).
+- Verified headless (Chrome, fake cameras): phone page connects over WebRTC,
+  streams at camera rate, appears and disappears as a camera on the host.
+
+**Simulation** (`test/stereoSim.ts`, `test/multiview.test.ts`: 1280×720 60°,
+1920×1080 70° and 1280×720 65° cameras, 30–35 cm either side of camera 0 and
+turned inward, hand on a smooth path 40–80 cm away, 1–1.5 px noise, clocks
++60 ms and −30 ms off):
 
 | Quantity | Recovered | True |
 |---|---|---|
-| Time offset | 64 ms | 60 ms |
-| Rotation | 0.3° error | — |
-| Baseline (skeleton scale) | 35.2 cm | 35.5 cm |
+| Time offsets | 59 / 61 / −29 ms | 60 / 60 / −30 ms |
+| Rotation | < 0.1° error | — |
+| Baseline (skeleton scale) | 35.5 cm | 35.5 cm |
 | Baseline (hand-size scale) | within 8 % | — |
-| Joint error, triangulated (1 px noise) | 0.5 mm median | — |
+| Joint error, triangulated | 0.5 mm median | — |
+| Joint error, cameras 1+2 only (camera 0 lost the hand) | < 5 mm median | — |
+| Skeleton measured by triangulation | < 3 % per bone (median) | — |
 
-vs. ~15 mm for the monocular skeleton method. Calibration takes < 1 s to compute.
+vs. ~15 mm joint error for the monocular skeleton method. Calibration takes
+< 1 s to compute per camera.
 
-**Practical notes**: turn off Center Stage (macOS Video Effects) on both
+**Practical notes**: turn off Center Stage (macOS Video Effects) on all
 cameras — it crops/zooms continuously, changing the intrinsics. Each camera's
 focal length matters (use the paper step per camera, or enter FOVs); errors
 there bias depth. Two `getUserMedia` calls are made sequentially.
@@ -304,6 +373,12 @@ there bias depth. Two `getUserMedia` calls are made sequentially.
   MediaPipe noise and a ~30 fps unsynchronised, rolling-shutter pair? Does the
   Continuity Camera time offset stay constant, or drift (would need online
   re-estimation)? Is the iPhone's focal length stable (lens switching)?
+- Remote cameras: real WiFi latency/jitter and phone thermal throttling; does
+  the clock offset stay put (pings follow drift; the pair time offset doesn't)?
+  Should the per-pair time offset be re-estimated online?
+- Cameras that don't overlap camera 0 can't be calibrated yet; chaining via
+  other cameras (or a joint bundle adjustment over all cameras and frames)
+  would remove that restriction and refine every pose together.
 - Stereo intrinsics: refine both focal lengths during stereo calibration
   (observable with enough depth variation) instead of relying on per-camera steps?
 
@@ -342,7 +417,7 @@ there bias depth. Two `getUserMedia` calls are made sequentially.
 1c. ✅ Skeleton placement: rigid palm + ray–sphere fingers (foreshortening push-back).
 2. ✅ Stereo in one tab (two `getUserMedia`, capture-time pairing, hand-keypoint
    self-calibration incl. time offset, triangulation; monocular fallback per view).
-3. Two-device mode over WebRTC: a remote `StereoSource` that receives the
-   phone's landmarks, intrinsics and capture times; clock sync replaces the
-   time-offset search (or seeds it).
+2b. ✅ Skeleton measured by triangulation (at calibration and continuously),
+   given to every camera for single-view fallback.
+3. ✅ Remote cameras over WebRTC, generalised to N cameras (local and remote).
 4. WebXR backend.

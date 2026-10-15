@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="data:," />
+    <title>webhands remote camera</title>
+    <link rel="stylesheet" href="./style.css" />
+    <style>
+      main.remote { grid-template-columns: 1fr; grid-template-rows: minmax(240px, 1fr) auto; height: 100dvh; }
+      @media (min-width: 800px) { main.remote { grid-template-columns: 1fr 300px; grid-template-rows: 1fr; } }
+    </style>
+  </head>
+  <body>
+    <main class="remote">
+      <div class="view">
+        <div class="videoWrap" id="videoWrap"><video id="video" muted playsinline></video><canvas id="overlay"></canvas></div>
+      </div>
+      <aside>
+        <h1>webhands · remote camera</h1>
+        <p class="hint">This device sends its hand landmarks to the computer that showed the QR code.
+          Prop it up so it sees where your hands will be, and keep this page open.</p>
+        <label>Camera <select id="camera"></select></label>
+        <label>Room <input id="room" type="text" style="width: 120px" /></label>
+        <button id="start" class="primary">Start &amp; connect</button>
+        <div id="status"></div>
+
+        <h2>Field of view</h2>
+        <label>Horizontal FOV (°) <input id="fov" type="number" step="0.5" min="20" max="140" /></label>
+        <p class="hint">More accurate: hold a sheet of A4 tilted ~45° in view, tap below, then tap its 4 corners.</p>
+        <button id="paper">Tap A4 corners</button>
+        <label><span>Mirror view</span><input id="mirror" type="checkbox" /></label>
+      </aside>
+    </main>
+    <script type="module" src="./remote.ts"></script>
+  </body>
+</html>

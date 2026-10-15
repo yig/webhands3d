@@ -82,6 +82,8 @@ export function createCalibrationPanel(container: HTMLElement, options: Calibrat
     options.nameFor?.(s, i) || (s as { label?: string }).label || `Camera ${i + 1}`;
   const videoOf = (s: ViewSource) =>
     options.videoFor?.(s) ?? (s instanceof MonocularHandTracker ? s.videoElement : null);
+  /** Whether a camera's lens is calibrated: here, or on its own device (a phone reports it). */
+  const lensCalibrated = (s: ViewSource) => !!s.calibrator?.status.focal.calibrated || !!s.focalCalibrated;
   const errorText = (e: unknown) =>
     e instanceof DOMException && e.name === 'AbortError' ? 'Cancelled' : e instanceof Error ? e.message : String(e);
 
@@ -121,7 +123,7 @@ export function createCalibrationPanel(container: HTMLElement, options: Calibrat
     const rows = sources().map((s, i) => {
       const cal = s.calibrator;
       const k = s.intrinsics;
-      const status = cal && { calibrated: cal.status.focal.calibrated || !!s.focalCalibrated };
+      const status = cal && { calibrated: lensCalibrated(s) };
       const name = nameOf(s, i);
       const video = videoOf(s);
       const fov = k ? `${fovFromIntrinsics(k).toFixed(1)}°` : '—';
@@ -179,7 +181,7 @@ export function createCalibrationPanel(container: HTMLElement, options: Calibrat
     });
     return section(
       'Camera lens (field of view)',
-      sources().every((s) => s.calibrator?.status.focal.calibrated),
+      sources().length > 0 && sources().every(lensCalibrated),
       'Easiest: on another device (phone, laptop) press "Show pattern for another camera", press "Screen pattern" here, and hold that screen up to this camera, tilting it 30–60° in different directions. Or hold a credit card (or paper flat on a book) tilted and click its corners. This measures the lens only, so cameras can be moved afterwards.',
       ...rows,
       options.showPatternButton === false
@@ -354,7 +356,7 @@ export function createCalibrationPanel(container: HTMLElement, options: Calibrat
   };
   const changeKey = () =>
     JSON.stringify([
-      sources().map((s) => [s.cameraId, s.intrinsics?.fx, s.calibrator?.status, (s as { label?: string }).label]),
+      sources().map((s) => [s.cameraId, s.intrinsics?.fx, s.calibrator?.status, s.focalCalibrated, (s as { label?: string }).label]),
       multi ? tracker.status.views.map((v) => [v.calibration?.R, v.calibration?.warning]) : null,
       !!lastRecording,
     ]);

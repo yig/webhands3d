@@ -78,6 +78,22 @@ await host.waitForFunction(() => document.querySelectorAll('.view .label').lengt
 check(/Connected/.test(await phone.locator('.banner').textContent()), 'phone page connects over WebRTC');
 check((await tiles(host)).length === 2, 'phone appears as a camera on the host');
 
+// Lens step: done (✓) only once every camera's lens is calibrated — the phone's on its own page.
+const lensMark = () => host.locator('section', { hasText: 'Camera lens' }).locator('.mark').textContent();
+const markBefore = await lensMark();
+const setFov = async (pg, value) => {
+  const input = pg.locator('input[title^="Horizontal field of view"]').first();
+  await input.fill(String(value));
+  await input.press('Tab');
+};
+await setFov(host, 64);
+await host.waitForTimeout(1500);
+const markHostOnly = await lensMark();
+await setFov(phone, 45);
+await host.waitForTimeout(2500);
+const markBoth = await lensMark();
+check(markBefore === '○' && markHostOnly === '○' && markBoth === '✓', `lens step ticks once both cameras are calibrated (${markBefore} → ${markHostOnly} → ${markBoth})`);
+
 // A calibration run (no hands: fails) is recorded and can be downloaded.
 await host.locator('button:has-text("Calibrate cameras")').click();
 await host.waitForTimeout(13500);

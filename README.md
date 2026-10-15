@@ -13,9 +13,9 @@ with a pattern shown on another screen, or with a credit card or sheet of paper.
 You calibrate hand size with a credit card, and camera positions by moving one
 hand around.
 
-**Live demo:** https://ygingold.github.io/webhands3d/ (one camera ·
-[several cameras](https://ygingold.github.io/webhands3d/cameras.html) ·
-[WebXR](https://ygingold.github.io/webhands3d/xr.html))
+**Live demo:** https://yig.github.io/webhands3d/ (one camera ·
+[several cameras](https://yig.github.io/webhands3d/cameras.html) ·
+[WebXR](https://yig.github.io/webhands3d/xr.html))
 
 ## Install
 
@@ -130,8 +130,8 @@ and zooms, which changes the camera's geometry.
 
 ## Releasing
 
-1. **GitHub**: create the empty repository `ygingold/webhands3d`, then
-   `git remote add origin git@github.com:ygingold/webhands3d.git` and
+1. **GitHub**: create the empty repository `yig/webhands3d`, then
+   `git remote add origin git@github.com:yig/webhands3d.git` and
    `git push -u origin main`.
 2. **Demo**: in the repository's Settings → Pages, set Source to "GitHub
    Actions". The `Demo on GitHub Pages` workflow then publishes the demo on

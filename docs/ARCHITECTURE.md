@@ -545,7 +545,7 @@ A phone (or another tab/computer) joins as a camera:
 ## Packaging and publishing
 
 Published as **`@ygingold/webhands3d`** (npm, public scoped package; source at
-github.com/ygingold/webhands3d; CC0-1.0). One ES module (`dist/webhands.js`)
+github.com/yig/webhands3d; CC0-1.0). One ES module (`dist/webhands.js`)
 plus TypeScript declarations; runtime dependencies `@mediapipe/tasks-vision`,
 `peerjs`, `qrcode` (three.js is demo-only). `prepublishOnly` runs tests and the
 build. The demo pages build to a static site (`npm run build:demo`, relative

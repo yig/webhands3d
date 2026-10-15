@@ -21,13 +21,13 @@
   ],
   "license": "CC0-1.0",
   "author": "Yotam Gingold",
-  "homepage": "https://github.com/ygingold/webhands3d#readme",
+  "homepage": "https://github.com/yig/webhands3d#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ygingold/webhands3d.git"
+    "url": "git+https://github.com/yig/webhands3d.git"
   },
   "bugs": {
-    "url": "https://github.com/ygingold/webhands3d/issues"
+    "url": "https://github.com/yig/webhands3d/issues"
   },
   "type": "module",
   "main": "./dist/webhands.js",

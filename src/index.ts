@@ -117,10 +117,9 @@ export {
   type SenderSource,
 } from './remote/camera';
 export { ClockSync } from './remote/clock';
-export { dataChannelLink, memoryLinkPair, type Link } from './remote/link';
+export { memoryLinkPair, type Link } from './remote/link';
 export { PROTOCOL_VERSION, type HostToRemote, type RemoteToHost, type WireHand } from './remote/protocol';
-export { httpSignaling, type Signaling, type SignalMessage } from './remote/signaling';
-export { acceptRemotes, connectToHost, randomId, type WebRtcOptions } from './remote/webrtc';
+export { connectToHost, hostRemoteCameras, peerLink, randomId, type PeerConnectOptions, type RemoteCameraHost } from './remote/peer';
 export {
   Recorder,
   downloadRecording,
@@ -148,3 +147,11 @@ export {
   type CalibrationPanelStep,
   type StatusKind,
 } from './ui/panel';
+export {
+  createRemoteCameraJoin,
+  mountRemoteCamera,
+  type RemoteCameraJoin,
+  type RemoteCameraJoinOptions,
+  type RemoteCameraPage,
+  type RemoteCameraPageOptions,
+} from './ui/remote';

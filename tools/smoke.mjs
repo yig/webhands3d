@@ -64,14 +64,18 @@ check(
   'screen calibration shows Stop, a busy banner and on-video feedback; Stop cancels',
 );
 
-const room = new URL(await text(host, '#joinUrl')).searchParams.get('room');
-const phone = await page(`/remote.html?room=${room}`, 'remote');
+// The join component registers with PeerJS (needs internet) and shows the phone link.
+await host.locator('div.url:has-text("remote.html")').waitFor({ timeout: 20000 });
+const hostId = new URL(await host.locator('div.url').textContent()).searchParams.get('host');
+check(!!hostId, `computer registered with PeerJS (code ${hostId})`);
+const phone = await page(`/remote.html?host=${hostId}`, 'remote');
 await phone.waitForTimeout(500);
 // Before the camera runs, the phone's calibration panel says what to do first.
 check((await phone.locator('text=Start this camera first').count()) === 1, 'phone: calibration panel says to start the camera first');
-const cams = await phone.$$eval('#camera option', (os) => os.map((o) => o.value));
-await phone.selectOption('#camera', cams.at(-1));
-await phone.click('#start');
+await phone.locator('select option').first().waitFor({ state: 'attached' });
+const cams = await phone.locator('select').first().locator('option').evaluateAll((os) => os.map((o) => o.value));
+await phone.locator('select').first().selectOption(cams.at(-1));
+await phone.locator('button:has-text("Start & connect")').click();
 // Loading MediaPipe and connecting can take a while on a busy machine.
 await phone.locator('.banner:has-text("Connected to the computer")').waitFor({ timeout: 30000 }).catch(() => {});
 await host.waitForFunction(() => document.querySelectorAll('.view .label').length === 2, null, { timeout: 10000 }).catch(() => {});

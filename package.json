@@ -1,17 +1,54 @@
 {
-  "name": "webhands",
+  "name": "@ygingold/webhands3d",
   "version": "0.1.0",
-  "description": "3D hand tracking in the browser with no special hardware",
+  "description": "3D hand tracking in the browser with no special hardware: one webcam, several cameras (including phones over WebRTC), or WebXR headsets, with guided calibration.",
+  "keywords": [
+    "hand-tracking",
+    "hands",
+    "3d",
+    "webcam",
+    "mediapipe",
+    "stereo",
+    "multi-camera",
+    "triangulation",
+    "camera-calibration",
+    "webrtc",
+    "webxr",
+    "meta-quest",
+    "computer-vision",
+    "browser",
+    "peerjs"
+  ],
+  "license": "CC0-1.0",
+  "author": "Yotam Gingold",
+  "homepage": "https://github.com/ygingold/webhands3d#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ygingold/webhands3d.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ygingold/webhands3d/issues"
+  },
   "type": "module",
   "main": "./dist/webhands.js",
   "module": "./dist/webhands.js",
   "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./dist/webhands.js"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/webhands.js"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE"
   ],
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "dev": "vite",
     "dev:lan": "WEBHANDS_LAN=1 vite",
@@ -19,11 +56,13 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "smoke": "node tools/smoke.mjs",
-    "replay": "f() { WEBHANDS_RECORDING=\"$1\" vitest run test/replay.test.ts --silent=false --reporter=dot; }; f"
+    "replay": "f() { WEBHANDS_RECORDING=\"$1\" vitest run test/replay.test.ts --silent=false --reporter=dot; }; f",
+    "prepublishOnly": "npm test && npm run build"
   },
-  "license": "MIT",
   "dependencies": {
-    "@mediapipe/tasks-vision": "^1.1.0"
+    "@mediapipe/tasks-vision": "^1.1.0",
+    "peerjs": "^1.5.5",
+    "qrcode": "^1.5.4"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
@@ -32,7 +71,6 @@
     "@types/webxr": "^0.5.24",
     "@vitejs/plugin-basic-ssl": "^2.3.0",
     "playwright-core": "^1.64.1",
-    "qrcode": "^1.5.4",
     "three": "^0.186.1",
     "typescript": "^7.0.2",
     "vite": "^8.3.4",

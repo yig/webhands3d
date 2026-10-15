@@ -9,7 +9,7 @@
     "noUnusedParameters": true,
     "skipLibCheck": true,
     "isolatedModules": true,
-    "types": ["vite/client", "webxr"]
+    "types": ["vite/client", "webxr", "node"]
   },
   "include": ["src", "demo", "test", "tools", "vite.config.ts", "vitest.config.ts"]
 }

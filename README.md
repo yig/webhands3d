@@ -41,7 +41,7 @@ measures your hand's bone lengths for every camera. Turn off Center Stage.
 ## Library
 
 ```ts
-import { MonocularHandTracker } from 'webhands';
+import { MonocularHandTracker } from '@ygingold/webhands3d';
 
 const tracker = new MonocularHandTracker();   // opens the default camera
 tracker.onFrame((hands) => {
@@ -59,7 +59,7 @@ The quickest way: a ready-made, guided calibration UI for any tracker (it is
 what the demos use):
 
 ```ts
-import { createCalibrationPanel } from 'webhands';
+import { createCalibrationPanel } from '@ygingold/webhands3d';
 
 createCalibrationPanel(document.querySelector('#calibration'), { tracker });
 ```
@@ -72,7 +72,7 @@ result to the tracker and saves it per camera; steps reject with a
 `CalibrationError` whose `code` explains what to fix.
 
 ```ts
-import { pickCorners } from 'webhands';
+import { pickCorners } from '@ygingold/webhands3d';
 
 const cal = tracker.calibrator;
 
@@ -94,7 +94,7 @@ Objects: `KNOWN_LENGTHS` (card edges, AA/AAA batteries) and `KNOWN_RECTANGLES`
 ### Several cameras
 
 ```ts
-import { MonocularHandTracker, MultiViewHandTracker, RemoteCamera, acceptRemotes, httpSignaling } from 'webhands';
+import { MonocularHandTracker, MultiViewHandTracker, RemoteCamera, acceptRemotes, httpSignaling } from '@ygingold/webhands3d';
 
 const tracker = new MultiViewHandTracker([
   new MonocularHandTracker({ deviceId: laptopCamId }),   // camera 0: the reference frame
@@ -112,7 +112,7 @@ await tracker.calibrate({ onProgress }); // move one hand around, 12 s; also mea
 ### WebXR (Meta Quest and other headsets)
 
 ```ts
-import { WebXRHandTracker } from 'webhands';
+import { WebXRHandTracker } from '@ygingold/webhands3d';
 
 const tracker = new WebXRHandTracker();            // or { session } to share your renderer's XR session
 tracker.onFrame((hands) => { /* same Hand3D format: 21 joints, metres */ });

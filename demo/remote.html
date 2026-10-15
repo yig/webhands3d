@@ -4,33 +4,19 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="icon" href="data:," />
-    <title>webhands remote camera</title>
+    <title>webhands3d remote camera</title>
     <link rel="stylesheet" href="./style.css" />
     <style>
-      main.remote { grid-template-columns: 1fr; grid-template-rows: minmax(240px, 1fr) auto; height: 100dvh; }
-      @media (min-width: 800px) { main.remote { grid-template-columns: 1fr 300px; grid-template-rows: 1fr; } }
+      body { padding: 12px; max-width: 640px; margin: 0 auto; }
     </style>
   </head>
   <body>
-    <main class="remote">
-      <div class="view">
-        <div class="videoWrap" id="videoWrap"><video id="video" muted playsinline></video><canvas id="overlay"></canvas></div>
-      </div>
-      <aside>
-        <h1>webhands · remote camera</h1>
-        <p class="hint">This device sends its hand landmarks to the computer that showed the QR code.
-          Prop it up so it sees where your hands will be, and keep this page open.</p>
-        <label>Camera <select id="camera"></select></label>
-        <label>Room <input id="room" type="text" style="width: 120px" /></label>
-        <button id="start" class="primary">Start &amp; connect</button>
-        <p class="hint" id="connection">Not connected</p>
-
-        <h2>Calibrate this camera's lens</h2>
-        <!-- The library's drop-in calibration panel, lens step only (the computer does the rest). -->
-        <div id="calibration"></div>
-        <label><span>Mirror view</span><input id="mirror" type="checkbox" /></label>
-      </aside>
-    </main>
-    <script type="module" src="./remote.ts"></script>
+    <h1>webhands3d · remote camera</h1>
+    <!-- The whole phone page is the library's mountRemoteCamera component. -->
+    <div id="remote"></div>
+    <script type="module">
+      import { mountRemoteCamera } from '../src/index.ts';
+      mountRemoteCamera(document.getElementById('remote'));
+    </script>
   </body>
 </html>

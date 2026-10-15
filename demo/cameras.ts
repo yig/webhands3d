@@ -1,15 +1,12 @@
-import QRCode from 'qrcode';
 import {
   MonocularHandTracker,
   MultiViewHandTracker,
   RemoteCamera,
-  acceptRemotes,
   createCalibrationPanel,
+  createRemoteCameraJoin,
   fromCamera0,
-  httpSignaling,
   watchCameras,
   openCamera,
-  randomId,
   type CameraHandle,
   type Hand3D,
   type StatusKind,
@@ -220,51 +217,32 @@ addLocal.addEventListener('click', () =>
 );
 
 // ---------- phones ----------
-const roomKey = 'webhands:room';
-let room = '';
-try {
-  room = localStorage.getItem(roomKey) ?? '';
-} catch {}
-if (!room) {
-  room = randomId();
-  try {
-    localStorage.setItem(roomKey, room);
-  } catch {}
-}
-const signaling = httpSignaling(location.origin, room);
-acceptRemotes(signaling, (link) => {
-  const camera = new RemoteCamera(link);
-  addView('remote', 'Phone', async () => ({ source: camera }))
-    .then((v) => {
+// The library's join component registers with PeerJS and shows the QR code; phones
+// that connect get a tile here (addCamera) and leave with it (removeCamera).
+(async () => {
+  // Phones need this page's address on the local network (over HTTPS for their camera).
+  let base = new URL('.', location.href).href;
+  if (['localhost', '127.0.0.1'].includes(location.hostname)) {
+    try {
+      const info = (await (await fetch('/webhands-info')).json()) as { urls: string[] };
+      if (info.urls[0]) base = `${info.urls[0]}/`;
+    } catch {}
+  }
+  createRemoteCameraJoin($('join'), {
+    tracker,
+    phonePageUrl: new URL('remote.html', base).href,
+    onStatus: say,
+    addCamera: async (camera) => {
+      const v = await addView('remote', 'Phone', async () => ({ source: camera }));
       v.name = camera.label || 'Phone';
       v.tile.querySelector('.label')!.textContent = v.name;
       panel.refresh();
-      say(`${camera.label || 'A phone'} joined`, 'ok');
-    })
-    .catch((e) => say(errorText(e), 'error'));
-  camera.onClose(() => {
-    const v = views.find((x) => x.source === camera);
-    if (v) removeView(v);
-    say(`${camera.label || 'A phone'} left`);
+    },
+    removeCamera: (camera) => {
+      const v = views.find((x) => x.source === camera);
+      if (v) removeView(v);
+    },
   });
-});
-
-(async () => {
-  // Phones need this page's address on the local network, over HTTPS (camera access needs a secure context).
-  let base = location.origin;
-  if (['localhost', '127.0.0.1'].includes(location.hostname)) {
-    try {
-      const info = (await (await fetch('/webhands-signal/_info')).json()) as { urls: string[] };
-      base = info.urls[0] ?? base;
-    } catch {}
-  }
-  const url = `${base}/remote.html?room=${room}`;
-  $('joinUrl').textContent = url;
-  await QRCode.toCanvas($<HTMLCanvasElement>('qr'), url, { width: 180, margin: 1 });
-  if (!url.startsWith('https:')) {
-    $('phoneHint').textContent =
-      'Phones need HTTPS: restart the demo with `npm run dev:lan` and open it from the address it prints.';
-  }
 })();
 
 // ---------- page actions ----------

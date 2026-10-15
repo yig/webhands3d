@@ -114,6 +114,7 @@ describe('Calibrator', () => {
     cal.reset();
     expect(tracker.handScale).toBe(1);
     expect(cal.status.missing).toEqual(['handSize', 'focal', 'skeleton']);
-    expect(cal.status.focal.hfovDegrees).toBeCloseTo(60, 6);
+    // Back to the default: 66° across the long side (the 1280 px width here).
+    expect(cal.status.focal.hfovDegrees).toBeCloseTo(66, 6);
   });
 });

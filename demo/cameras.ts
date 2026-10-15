@@ -334,7 +334,18 @@ calibrate.addEventListener('click', () =>
     }
     render();
     const lines = result.views.flatMap((r, i) =>
-      i === 0 ? [] : [`camera ${i}: ${r instanceof Error ? r.message : r ? `${(Math.hypot(...r.t) * 100).toFixed(1)} cm, ${r.rmsPx.toFixed(1)} px` : 'skipped'}`],
+      i === 0
+        ? []
+        : [
+            `camera ${i}: ${
+              r instanceof Error
+                ? r.message
+                : r
+                  ? `${(Math.hypot(...r.t) * 100).toFixed(1)} cm, ${r.rmsPx.toFixed(1)} px, ${(r.inlierRatio * 100).toFixed(0)} % consistent` +
+                    (r.warning ? `. ${r.warning}` : '')
+                  : 'skipped'
+            }`,
+          ],
     );
     const sides = Object.keys(result.skeletons);
     return `${lines.join('; ')}${sides.length ? `; skeleton measured (${sides.join(', ')})` : ''}`;

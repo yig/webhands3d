@@ -272,7 +272,8 @@ camera k's frame. Without another calibrated camera, the next camera simply
 becomes camera 0.
 
 **Calibration** (`tracker.calibrate()`, 12 s, one hand moving through the shared
-view at varied depths). Every other camera is calibrated **pairwise against
+view at varied depths). *Note: the pairwise steps below were rebuilt for real
+data — see "Robust pair calibration" — after a real recording failed.* Every other camera is calibrated **pairwise against
 camera 0** (`calibrateStereo`), so each must share some view with camera 0;
 pairs are stored separately (`webhands:stereo:<id0>|<idi>`), so adding a camera
 doesn't invalidate the others. Per pair:
@@ -348,6 +349,51 @@ while running (`refineSkeleton`, default on; `refineIntervalMs`). The overall
 size still comes from camera 0's hand size or skeleton; triangulation fixes
 proportions, not the metric scale. (A fully independent scale would need a
 known baseline or a known-size object seen by two cameras; not implemented.)
+
+## Robust pair calibration (real MediaPipe data)
+
+A real recording (laptop + iPhone back camera in portrait over WebRTC, Safari)
+calibrated badly: 12 % inliers, median epipolar error 11–25 px, answers
+varying from 8 to 47 cm. Replaying it (`npm run replay`) and testing hypotheses
+against it found:
+
+- **Landmark noise is much larger than simulated.** MediaPipe's 2D landmarks
+  for the same hand disagree between two viewpoints by ~5–10 px for a ~300 px
+  hand (more for occluded joints), and some frames are garbage. It's not
+  timing (error doesn't grow with hand speed) and not coordinate
+  rotation/mirroring/aspect issues (tested). The fixed 4 px inlier threshold
+  rejected most good points, and 8-point RANSAC on such noisy points rarely
+  produced a good model.
+- **Fields of view matter and were both the 60° default.** A portrait phone's
+  real horizontal FOV is ~40–45°.
+- **Focal lengths can't be estimated from the pair.** With both cameras
+  converging on the hand, epipolar error and even hand-size constancy only
+  determine the *ratio* of the two focal lengths (a valley along the
+  diagonal of a FOV grid, in simulation and on the recording); a free fit
+  runs to extreme FOVs.
+
+Changes (`src/stereo/robust.ts`, `calibrateStereo`):
+- Inlier threshold = 3 % of the median hand length in pixels (≥ 4 px).
+- Starting poses from (a) RANSAC and (b) the robust mean rotation between
+  the two views' MediaPipe 3D hands (Kabsch per frame, ~25° noise each,
+  trimmed mean), with the translation direction from 2-point RANSAC given the
+  rotation (a least-squares direction was 78° off with 10 % garbage frames).
+- Trimmed Levenberg–Marquardt in pixels (keep residuals < max(3×median,
+  threshold), three rounds); best median error wins.
+- Time offset: initial pose at offset 0, then median error under that pose
+  over −200…200 ms (cheap), refit, finer search, then hand-size constancy.
+- Default intrinsics: **66° across the long image side** (`defaultIntrinsics`)
+  instead of 60° horizontal, so a portrait phone defaults to ~40°.
+- `StereoCalibration.warning` when < 50 % of points are consistent or the
+  median error exceeds the threshold (advice: set FOVs with the A4 step).
+
+Results — simulation with 6 px noise, ~20° 3D-hand wobble, 10 % garbage frames,
+22 fps portrait phone: rotation < 1.5°, baseline within 5 %, offset within
+10 ms with true FOVs; with the default FOVs (66°/40° vs true 70°/45°)
+rotation < 4°, baseline within 15 %. The real recording now gives one
+consistent geometry (phone to the right, turned ~58° toward the hand; 68–72 %
+inliers, 4–6 px) whose baseline depends on the assumed FOVs (33 cm at 60°/60°,
+49 cm at the new defaults) — the remaining reason to calibrate FOVs.
 
 ## Remote cameras
 

@@ -1,4 +1,5 @@
 import {
+  defaultIntrinsics,
   fovFromIntrinsics,
   intrinsicsFromFov,
   loadCalibration,
@@ -239,7 +240,7 @@ export class Calibrator {
     const k = this.tracker.intrinsics;
     this.tracker.handScale = 1;
     this.tracker.skeletons = {};
-    if (k) this.tracker.intrinsics = intrinsicsFromFov(k.width, k.height);
+    if (k) this.tracker.intrinsics = defaultIntrinsics(k.width, k.height);
     this.views = [];
     this.stored = {};
     saveCalibration(this.tracker.cameraId, {});

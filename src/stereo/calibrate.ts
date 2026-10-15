@@ -3,16 +3,9 @@ import { essentialFromPose } from '../geometry/linalg';
 import { median } from '../geometry/numeric';
 import type { Intrinsics } from '../intrinsics';
 import { NUM_JOINTS, type Hand3D, type Handedness } from '../types';
-import {
-  decomposeEssential,
-  ransacEssential,
-  refineRelativePose,
-  sampsonDistance,
-  triangulate,
-  triangulateLinear,
-  type RelativePose,
-} from './epipolar';
+import { sampsonDistance, triangulateViews, type RelativePose } from './epipolar';
 import { frameInterval, groupByFrame, interpolateLandmarks, pairingLimits, type TimedHands } from './pairing';
+import { fitStereo, refineRobust, sampsonPx, type PixelPairs, type StereoFit } from './robust';
 
 /** Where camera 1 is relative to camera 0: X1 = R·X0 + t (metres). */
 export interface StereoCalibration {
@@ -20,13 +13,15 @@ export interface StereoCalibration {
   t: number[];
   /** Add to camera 1's timestamps to put them on camera 0's clock, ms. */
   timeOffsetMs: number;
-  /** RMS epipolar (Sampson) error of the inliers, pixels. */
+  /** Typical (median) epipolar error over all correspondences, pixels. */
   rmsPx: number;
   inlierRatio: number;
-  /** Paired frames used. */
+  /** Paired hand-frames used. */
   frames: number;
   /** Source of the metric scale. */
   scaleFrom: 'skeleton' | 'handSize';
+  /** Set when the fit looks poor, with advice. */
+  warning?: string;
 }
 
 export interface StereoCalibrationInput {
@@ -43,7 +38,7 @@ export interface StereoCalibrationInput {
 export interface StereoCalibrationOptions {
   /** Time offsets searched, ms (camera 1 relative to camera 0). */
   maxOffsetMs?: number;
-  /** RANSAC inlier threshold, pixels. */
+  /** Inlier threshold, pixels. Default: 3 % of the hand's length in pixels, at least 4. */
   thresholdPx?: number;
   random?: () => number;
   /** Receives intermediate results, for debugging. */
@@ -52,16 +47,20 @@ export interface StereoCalibrationOptions {
 
 /** Intermediate results of calibrateStereo (pixel units where noted). */
 export interface StereoDiagnostics {
-  /** Coarse time-offset search: offset → median Sampson distance (px) of the refined pose there. */
+  /** Median hand length (wrist → middle tip) in pixels, and the inlier threshold derived from it. */
+  handPx: number;
+  thresholdPx: number;
+  /** Time-offset search: offset → median Sampson distance (px) under the current pose. */
   coarse: { offset: number; sampsonPx: number }[];
   /** Fine search: offset → hand-size spread (MAD of log size) and median Sampson (px). */
   fine: { offset: number; spread: number; sampsonPx: number }[];
   chosenOffsetMs: number;
-  /** Paired hand-frames from single-hand frames (first pose) and in total (with two-hand frames). */
+  /** Paired hand-frames from single-hand frames (initial pose) and in total (with two-hand frames). */
   singleHandPairs: number;
   totalPairs: number;
-  /** RANSAC inliers on single-hand pairs, and final inliers, as correspondences (21 per hand-frame). */
-  ransacInliers: number;
+  /** Median Sampson (px) of the initial pose (at offset 0) and of the final pose. */
+  initialPx: number;
+  finalPx: number;
   finalInliers: number;
   correspondences: number;
   /** Per-bone ratios (true / triangulated length) used for the scale: count and quartiles. */
@@ -78,94 +77,93 @@ export class StereoCalibrationError extends Error {
   }
 }
 
+/** Hand-frames used while searching (subsampled evenly), for speed. */
+const SEARCH_FRAMES = 150;
+
 /**
  * Self-calibrate a camera pair from a hand moving in front of both, using the
- * 21 landmarks per frame as correspondences:
- *   1. time offset: for candidate offsets, pair frames (interpolating camera 1)
- *      and keep the offset whose robust essential matrix fits best; then refine
- *      it by hand-size constancy. A timing error shifts camera 1's points along
- *      the hand's motion; where that is along the epipolar lines the epipolar
- *      fit can't see it, but it changes the triangulated depth, so the
- *      triangulated hand appears to grow and shrink as it moves. The offset
- *      that keeps its size most constant wins;
- *   2. relative pose: RANSAC 8-point essential matrix → decomposition →
- *      Levenberg–Marquardt on Sampson distances;
- *   3. metric scale: triangulated (unit-baseline) bone lengths vs. the hand's
- *      true bone lengths (calibrated skeleton, else hand size × MediaPipe).
- * Needs the hand to move through the shared view at varied depths.
+ * 21 landmarks per frame as correspondences. Built for real MediaPipe
+ * landmarks, which disagree between views by several pixels and include
+ * garbage frames (see robust.ts):
+ *   1. initial pose at offset 0 (timing error just adds noise): `fitStereo`,
+ *      from RANSAC and from the rotation between MediaPipe's 3D hands;
+ *   2. time offset: median epipolar error under that pose over −200…200 ms,
+ *      refit, repeat finer; then, among offsets that fit about as well, the
+ *      one that keeps the triangulated hand size most constant (timing errors
+ *      along the epipolar lines change depth, not the epipolar error);
+ *   3. final pose with two-hand frames added (paired by geometry);
+ *   4. metric scale: triangulated bone lengths vs. the hand's true bone lengths
+ *      (calibrated skeleton, else hand size × MediaPipe).
+ * Needs the hand to move through the shared view at varied depths, and each
+ * camera's field of view (the epipolar geometry can't determine them).
  */
 export function calibrateStereo(input: StereoCalibrationInput, options: StereoCalibrationOptions = {}): StereoCalibration {
-  const { maxOffsetMs = 200, thresholdPx = 4, random = Math.random, onDiagnostics } = options;
-  const coarseCurve: StereoDiagnostics['coarse'] = [];
+  const { maxOffsetMs = 200, random = Math.random, onDiagnostics } = options;
+  const { k0, k1 } = input;
   const frames0 = groupByFrame(input.samples0);
   const frames1 = groupByFrame(input.samples1);
-  const f = (input.k0.fx + input.k1.fx) / 2;
-  const threshold = thresholdPx / f;
-
-  // 1. Time offset. Coarse: every 10 ms, a robust pose fit (RANSAC, then
-  // refined on its inliers) scored by median Sampson distance.
-  const score = (offset: number) => {
-    const c = correspondences(frames0, frames1, input.k0, input.k1, offset, 3000, random);
-    if (c.n < 100) return { offset, cost: Infinity, pose: null };
-    const fit = ransacEssential(c.x0, c.x1, { iterations: 120, threshold, random, groups: c.groups });
-    if (!fit || fit.inliers.length < 50) return { offset, cost: Infinity, pose: null };
-    const pose = refineRelativePose(decomposeEssential(fit.E, c.x0, c.x1, fit.inliers), c.x0, c.x1, fit.inliers, 5);
+  const handPx = median(
+    [...input.samples0, ...input.samples1].flatMap((h) => {
+      const uv = h.debug?.landmarks2d;
+      return uv ? [Math.hypot(uv[24] - uv[0], uv[25] - uv[1])] : [];
+    }),
+  );
+  const thr = options.thresholdPx ?? Math.max(4, 0.03 * (handPx || 0));
+  const pairsAt = (offset: number, pose?: RelativePose) => toPixelPairs(pairHands(frames0, frames1, k0, k1, offset, pose));
+  const sub = (p: PixelPairs) => subsample(p, SEARCH_FRAMES);
+  const medianPx = (pose: RelativePose, p: PixelPairs) => {
     const E = essentialFromPose(pose.R, pose.t);
-    const d = Array.from({ length: c.n }, (_, i) => sampsonDistance(E, c.x0[i * 2], c.x0[i * 2 + 1], c.x1[i * 2], c.x1[i * 2 + 1]));
-    return { offset, cost: median(d), pose };
+    return median(Array.from({ length: p.n }, (_, i) => sampsonPx(E, k0, k1, p, i)));
   };
-  let best: ReturnType<typeof score> = { offset: 0, cost: Infinity, pose: null };
-  for (let o = -maxOffsetMs; o <= maxOffsetMs; o += 10) {
-    const s = score(o);
-    coarseCurve.push({ offset: o, sampsonPx: s.cost * f });
-    if (s.cost < best.cost) best = s;
-  }
-  if (!Number.isFinite(best.cost) || !best.pose) {
-    throw new StereoCalibrationError(
+  const tooFew = () =>
+    new StereoCalibrationError(
       'too-few-frames',
       'Not enough frames with one hand visible in both cameras (show just one hand while calibrating)',
     );
+
+  // 1. Initial pose.
+  const initial = pairsAt(0);
+  if (initial.n < 100) throw tooFew();
+  let fit: StereoFit | null = fitStereo(sub(initial), k0, k1, { thresholdPx: thr, random });
+  if (!fit) throw new StereoCalibrationError('no-geometry', 'Could not find a consistent camera geometry; move the hand around more');
+  const initialPx = fit.medianPx;
+
+  // 2. Time offset: coarse then finer, refitting the pose at the best offset each time.
+  const coarse: StereoDiagnostics['coarse'] = [];
+  let offset = 0;
+  for (const [from, to, step] of [[-maxOffsetMs, maxOffsetMs, 10], [-20, 20, 2]] as const) {
+    let best = { offset, cost: Infinity };
+    for (let o = (step === 10 ? 0 : offset) + from; o <= (step === 10 ? 0 : offset) + to; o += step) {
+      const p = sub(pairsAt(o));
+      if (p.n < 100) continue;
+      const cost = medianPx(fit, p);
+      coarse.push({ offset: o, sampsonPx: cost });
+      if (cost < best.cost) best = { offset: o, cost };
+    }
+    if (!Number.isFinite(best.cost)) break;
+    offset = best.offset;
+    fit = refineRobust(fit, sub(pairsAt(offset)), k0, k1, thr);
   }
-  // Fine: within ±60 ms, the offset that keeps the triangulated hand size most
-  // constant — among offsets whose epipolar fit is still about as good as the
-  // best (elsewhere the pose can degenerate into trivially constant sizes).
-  const candidates: { offset: number; spread: number; sampson: number }[] = [];
-  {
-    const start = best.pose;
-    const evaluate = (o: number) => {
-      if (candidates.some((c) => c.offset === o)) return;
-      candidates.push({ offset: o, ...sizeSpread(frames0, frames1, input.k0, input.k1, o, start, threshold) });
-    };
-    const pick = () => {
-      const minSampson = Math.min(...candidates.map((c) => c.sampson));
-      const ok = candidates.filter((c) => c.sampson <= minSampson * 1.5 + 0.5 / f);
-      return ok.reduce((a, b) => (b.spread < a.spread ? b : a)).offset;
-    };
-    for (let o = best.offset - 60; o <= best.offset + 60; o += 4) evaluate(o);
-    const coarse = pick();
-    for (let o = coarse - 3; o <= coarse + 3; o += 1) evaluate(o);
-    best = { ...best, offset: pick() };
+  // Fine: hand-size constancy among offsets whose epipolar fit is about as good.
+  const fine: StereoDiagnostics['fine'] = [];
+  for (let o = offset - 30; o <= offset + 30; o += 3) {
+    const p = sub(pairsAt(o));
+    if (p.n < 100) continue;
+    fine.push({ offset: o, sampsonPx: medianPx(fit, p), spread: sizeSpread(p, fit, k0, k1, thr) });
+  }
+  if (fine.length) {
+    const minPx = Math.min(...fine.map((c) => c.sampsonPx));
+    offset = fine.filter((c) => c.sampsonPx <= minPx * 1.2 + 0.3).reduce((a, b) => (b.spread < a.spread ? b : a)).offset;
   }
 
-  // 2. Relative pose at the best offset (from frames where each camera sees one hand)…
-  const single = correspondences(frames0, frames1, input.k0, input.k1, best.offset, Infinity, random);
-  const fit = ransacEssential(single.x0, single.x1, { iterations: 600, threshold, random, groups: single.groups });
-  if (!fit || fit.inliers.length < 50) {
-    throw new StereoCalibrationError('no-geometry', 'Could not find a consistent camera geometry; move the hand around more');
-  }
-  const first = refineRelativePose(decomposeEssential(fit.E, single.x0, single.x1, fit.inliers), single.x0, single.x1, fit.inliers);
-  // …then with two-hand frames added, paired by that geometry, refined on the inliers.
-  const c = correspondences(frames0, frames1, input.k0, input.k1, best.offset, Infinity, random, first);
-  const E1 = essentialFromPose(first.R, first.t);
-  const inliers: number[] = [];
-  for (let i = 0; i < c.n; i++) {
-    if (sampsonDistance(E1, c.x0[i * 2], c.x0[i * 2 + 1], c.x1[i * 2], c.x1[i * 2 + 1]) < threshold) inliers.push(i);
-  }
-  const pose = refineRelativePose(first, c.x0, c.x1, inliers);
-  const ransacInliers = fit.inliers.length;
+  // 3. Final pose on all frames, two-hand frames paired by the geometry.
+  const singles = pairsAt(offset);
+  if (singles.n < 100) throw tooFew();
+  fit = refineRobust(fit, singles, k0, k1, thr);
+  const c = pairsAt(offset, fit);
+  fit = refineRobust(fit, c, k0, k1, thr);
 
-  // 3. Metric scale from bone lengths of triangulated hands.
-  const ratios: number[] = [];
+  // 4. Metric scale from bone lengths of triangulated hands.
   const mpLengths = new Map<Handedness, Float64Array>();
   for (const side of ['Left', 'Right'] as const) {
     const lengths = input.samples0
@@ -176,15 +174,12 @@ export function calibrateStereo(input: StereoCalibrationInput, options: StereoCa
     }
   }
   const scaleFrom = input.skeletonLengths?.Left || input.skeletonLengths?.Right ? 'skeleton' : 'handSize';
-  for (const frame of c.frames) {
-    const truth = input.skeletonLengths?.[frame.handedness] ?? mpLengths.get(frame.handedness);
+  const ratios: number[] = [];
+  const handedness = c.handedness ?? [];
+  for (let g = 0; g < c.n / NUM_JOINTS; g++) {
+    const truth = input.skeletonLengths?.[handedness[g]] ?? mpLengths.get(handedness[g]);
     if (!truth) continue;
-    const joints: (Float64Array | null)[] = [];
-    for (let j = 0; j < NUM_JOINTS; j++) {
-      const i = frame.offset + j;
-      const res = triangulate(pose.R, pose.t, c.x0[i * 2], c.x0[i * 2 + 1], c.x1[i * 2], c.x1[i * 2 + 1], input.k0.fx, input.k1.fx);
-      joints.push(res && res.error < thresholdPx && res.X[2] > 0 ? res.X : null);
-    }
+    const joints = triangulateFrame(c, g, fit, k0, k1, thr);
     for (let j = 1; j < NUM_JOINTS; j++) {
       const a = joints[j], b = joints[JOINT_PARENTS[j]];
       if (!a || !b) continue;
@@ -192,82 +187,91 @@ export function calibrateStereo(input: StereoCalibrationInput, options: StereoCa
       if (len > 0) ratios.push(truth[j - 1] / len);
     }
   }
-  const sortedRatios = [...ratios].sort((a, b) => a - b);
-  const q = (p: number) => sortedRatios[Math.floor(p * (sortedRatios.length - 1))] ?? NaN;
+  const sorted = [...ratios].sort((a, b) => a - b);
+  const q = (pr: number) => sorted[Math.floor(pr * (sorted.length - 1))] ?? NaN;
   onDiagnostics?.({
-    coarse: coarseCurve,
-    fine: candidates.map((x) => ({ offset: x.offset, spread: x.spread, sampsonPx: x.sampson * f })).sort((a, b) => a.offset - b.offset),
-    chosenOffsetMs: best.offset,
-    singleHandPairs: single.frames.length,
-    totalPairs: c.frames.length,
-    ransacInliers,
-    finalInliers: inliers.length,
+    handPx,
+    thresholdPx: thr,
+    coarse,
+    fine,
+    chosenOffsetMs: offset,
+    singleHandPairs: singles.n / NUM_JOINTS,
+    totalPairs: c.n / NUM_JOINTS,
+    initialPx,
+    finalPx: fit.medianPx,
+    finalInliers: fit.inliers.length,
     correspondences: c.n,
     scaleRatios: { count: ratios.length, q25: q(0.25), median: q(0.5), q75: q(0.75) },
   });
   if (!ratios.length) throw new StereoCalibrationError('no-geometry', 'Could not triangulate the hand to set the scale');
   const scale = median(ratios);
-
+  const inlierRatio = fit.inliers.length / c.n;
+  const poor = inlierRatio < 0.5 || fit.medianPx > thr;
   return {
-    R: Array.from(pose.R),
-    t: Array.from(pose.t, (v) => v * scale),
-    timeOffsetMs: best.offset,
-    rmsPx: pose.rms * f,
-    inlierRatio: inliers.length / c.n,
-    frames: c.frames.length,
+    R: Array.from(fit.R),
+    t: Array.from(fit.t, (v) => v * scale),
+    timeOffsetMs: offset,
+    rmsPx: fit.medianPx,
+    inlierRatio,
+    frames: c.n / NUM_JOINTS,
     scaleFrom,
+    ...(poor
+      ? {
+          warning:
+            "Poor fit: set each camera's field of view (A4 step), keep the cameras still, " +
+            'and move one hand slowly through the shared view.',
+        }
+      : {}),
   };
 }
 
-/**
- * Robust spread (median absolute deviation of the log) of the triangulated
- * hand size over frames, with the pose refined at this time offset. Small when
- * the offset is right.
- */
-function sizeSpread(
-  frames0: TimedHands[],
-  frames1: TimedHands[],
-  k0: Intrinsics,
-  k1: Intrinsics,
-  offsetMs: number,
-  start: RelativePose,
-  threshold: number,
-): { spread: number; sampson: number } {
-  const c = correspondences(frames0, frames1, k0, k1, offsetMs, 3000);
-  if (c.n < 100) return { spread: Infinity, sampson: Infinity };
-  // Refine on the correspondences consistent with the starting pose.
-  const E0 = essentialFromPose(start.R, start.t);
-  const inliers: number[] = [];
-  for (let i = 0; i < c.n; i++) {
-    if (sampsonDistance(E0, c.x0[i * 2], c.x0[i * 2 + 1], c.x1[i * 2], c.x1[i * 2 + 1]) < 3 * threshold) inliers.push(i);
-  }
-  if (inliers.length < 50) return { spread: Infinity, sampson: Infinity };
-  const pose = refineRelativePose(start, c.x0, c.x1, inliers, 8);
-  const E = essentialFromPose(pose.R, pose.t);
-  const sampson = median(
-    Array.from({ length: c.n }, (_, i) => sampsonDistance(E, c.x0[i * 2], c.x0[i * 2 + 1], c.x1[i * 2], c.x1[i * 2 + 1])),
-  );
-  const logSizes: number[] = [];
-  for (const frame of c.frames) {
-    const joints: (Float64Array | null)[] = [];
-    for (let j = 0; j < NUM_JOINTS; j++) {
-      const i = frame.offset + j;
-      joints.push(triangulateLinear(pose.R, pose.t, c.x0[i * 2], c.x0[i * 2 + 1], c.x1[i * 2], c.x1[i * 2 + 1]));
-    }
+/** Each joint of hand-frame g triangulated (camera 0 coordinates), or null where it fits badly. */
+function triangulateFrame(p: PixelPairs, g: number, pose: RelativePose, k0: Intrinsics, k1: Intrinsics, thr: number) {
+  const I = [1, 0, 0, 0, 1, 0, 0, 0, 1], Z = [0, 0, 0];
+  return Array.from({ length: NUM_JOINTS }, (_, j) => {
+    const i = g * NUM_JOINTS + j;
+    const r = triangulateViews([
+      { R: I, t: Z, x: (p.u0[i * 2] - k0.cx) / k0.fx, y: (p.u0[i * 2 + 1] - k0.cy) / k0.fy, f: k0.fx },
+      { R: pose.R, t: pose.t, x: (p.u1[i * 2] - k1.cx) / k1.fx, y: (p.u1[i * 2 + 1] - k1.cy) / k1.fy, f: k1.fx },
+    ]);
+    return r && r.error < thr && r.X[2] > 0 ? r.X : null;
+  });
+}
+
+/** Robust spread (MAD of log) of the triangulated hand size over hand-frames. Small when timing is right. */
+function sizeSpread(p: PixelPairs, pose: RelativePose, k0: Intrinsics, k1: Intrinsics, thr: number): number {
+  const logs: number[] = [];
+  for (let g = 0; g < p.n / NUM_JOINTS; g++) {
+    const joints = triangulateFrame(p, g, pose, k0, k1, 3 * thr);
     let size = 0;
-    for (let j = 1; j < NUM_JOINTS; j++) {
+    for (let j = 1; j < NUM_JOINTS && size >= 0; j++) {
       const a = joints[j], b = joints[JOINT_PARENTS[j]];
-      if (!a || !b) {
-        size = NaN;
-        break;
-      }
-      size += Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+      size = a && b ? size + Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) : -1;
     }
-    if (size > 0) logSizes.push(Math.log(size));
+    if (size > 0) logs.push(Math.log(size));
   }
-  if (logSizes.length < 20) return { spread: Infinity, sampson };
-  const m = median(logSizes);
-  return { spread: median(logSizes.map((v) => Math.abs(v - m))), sampson };
+  if (logs.length < 20) return Infinity;
+  const m = median(logs);
+  return median(logs.map((v) => Math.abs(v - m)));
+}
+
+/** Evenly spaced subset of at most `maxFrames` hand-frames. */
+function subsample(p: PixelPairs, maxFrames: number): PixelPairs {
+  const frames = p.n / NUM_JOINTS;
+  if (frames <= maxFrames) return p;
+  const keep = Array.from({ length: maxFrames }, (_, k) => Math.floor((k * frames) / maxFrames));
+  const n = keep.length * NUM_JOINTS;
+  const u0 = new Float64Array(n * 2), u1 = new Float64Array(n * 2), groups = new Int32Array(n);
+  keep.forEach((g, k) => {
+    u0.set(p.u0.subarray(g * NUM_JOINTS * 2, (g + 1) * NUM_JOINTS * 2), k * NUM_JOINTS * 2);
+    u1.set(p.u1.subarray(g * NUM_JOINTS * 2, (g + 1) * NUM_JOINTS * 2), k * NUM_JOINTS * 2);
+    groups.fill(k, k * NUM_JOINTS, (k + 1) * NUM_JOINTS);
+  });
+  return {
+    u0, u1, groups, n,
+    world: p.world && keep.map((g) => p.world![g]),
+    handedness: p.handedness && keep.map((g) => p.handedness![g]),
+  };
 }
 
 /**
@@ -280,15 +284,26 @@ function sizeSpread(
  * The instants are the slower camera's frame times, the faster camera
  * interpolated to them. `handedness` is camera 0's label.
  */
-function pairHands(
+export interface HandPair {
+  /** 21 × 2 pixels in camera 0 / camera 1. */
+  a: ArrayLike<number>;
+  b: ArrayLike<number>;
+  /** MediaPipe world landmarks in camera 0 / camera 1, if known. */
+  wa?: ArrayLike<number>;
+  wb?: ArrayLike<number>;
+  /** Camera 0's label. */
+  handedness: Handedness;
+}
+
+export function pairHands(
   frames0: TimedHands[],
   frames1: TimedHands[],
   k0: Intrinsics,
   k1: Intrinsics,
   offsetMs: number,
   pose?: RelativePose,
-): { a: ArrayLike<number>; b: ArrayLike<number>; handedness: Handedness }[] {
-  const pairs: { a: ArrayLike<number>; b: ArrayLike<number>; handedness: Handedness }[] = [];
+): HandPair[] {
+  const pairs: HandPair[] = [];
   const cam1Slower = frameInterval(frames1, Infinity) > frameInterval(frames0, Infinity);
   const [slow, fast] = cam1Slower ? [frames1, frames0] : [frames0, frames1];
   const { maxGapMs, nearestMs } = pairingLimits(frameInterval(fast, Infinity));
@@ -310,17 +325,19 @@ function pairHands(
     // The fast camera's hands at t, by its own labels.
     const fastHands = (['Left', 'Right'] as const).flatMap((side) => {
       const r = interpolateLandmarks(fast, side, t, maxGapMs, nearestMs);
-      return r ? [{ side, landmarks: r.landmarks }] : [];
+      return r ? [{ side, landmarks: r.landmarks, world: r.hand.debug?.worldLandmarks }] : [];
     });
     if (!slowHands.length || !fastHands.length) continue;
-    const add = (slowLandmarks: ArrayLike<number>, slowSide: Handedness, fastLandmarks: ArrayLike<number>, fastSide: Handedness) =>
+    const add = (slow: Hand3D, fast: (typeof fastHands)[number]) => {
+      const sl = slow.debug!.landmarks2d!, sw = slow.debug!.worldLandmarks;
       pairs.push(
         cam1Slower
-          ? { a: fastLandmarks, b: slowLandmarks, handedness: fastSide }
-          : { a: slowLandmarks, b: fastLandmarks, handedness: slowSide },
+          ? { a: fast.landmarks, b: sl, wa: fast.world, wb: sw, handedness: fast.side }
+          : { a: sl, b: fast.landmarks, wa: sw, wb: fast.world, handedness: slow.handedness },
       );
+    };
     if (slowHands.length === 1 && fastHands.length === 1) {
-      add(slowHands[0].debug!.landmarks2d!, slowHands[0].handedness, fastHands[0].landmarks, fastHands[0].side);
+      add(slowHands[0], fastHands[0]);
     } else if (E && slowHands.length === 2 && fastHands.length === 2) {
       const [s0, s1] = slowHands.map((h) => h.debug!.landmarks2d!);
       const [f0, f1] = fastHands.map((h) => h.landmarks);
@@ -328,62 +345,31 @@ function pairHands(
       const straight = cost(s0, f0) + cost(s1, f1);
       const crossed = cost(s0, f1) + cost(s1, f0);
       if (straight < crossed * 0.5) {
-        add(s0, slowHands[0].handedness, f0, fastHands[0].side);
-        add(s1, slowHands[1].handedness, f1, fastHands[1].side);
+        add(slowHands[0], fastHands[0]);
+        add(slowHands[1], fastHands[1]);
       } else if (crossed < straight * 0.5) {
-        add(s0, slowHands[0].handedness, f1, fastHands[1].side);
-        add(s1, slowHands[1].handedness, f0, fastHands[0].side);
+        add(slowHands[0], fastHands[1]);
+        add(slowHands[1], fastHands[0]);
       }
     }
   }
   return pairs;
 }
 
-/**
- * Normalised correspondences between the two cameras at the same instants
- * (camera 1 time = camera 0 time − offset). The instants are the slower
- * camera's frame times, and the faster camera is interpolated to them, so
- * interpolation spans short gaps even when one camera is slow (e.g. a phone
- * running MediaPipe at 10 fps). At most `limit` correspondences, sampled by
- * whole frames.
- */
-function correspondences(
-  frames0: TimedHands[],
-  frames1: TimedHands[],
-  k0: Intrinsics,
-  k1: Intrinsics,
-  offsetMs: number,
-  limit: number,
-  random?: () => number,
-  pose?: RelativePose,
-) {
-  const pairs = pairHands(frames0, frames1, k0, k1, offsetMs, pose);
-  const maxFrames = Math.floor(limit / NUM_JOINTS);
-  let chosen = pairs;
-  if (pairs.length > maxFrames && random) {
-    chosen = [...pairs];
-    for (let i = chosen.length - 1; i > 0; i--) {
-      const j = Math.floor(random() * (i + 1));
-      [chosen[i], chosen[j]] = [chosen[j], chosen[i]];
-    }
-    chosen = chosen.slice(0, maxFrames);
-  } else if (pairs.length > maxFrames) {
-    // Deterministic, evenly spaced (so costs at different offsets are comparable).
-    chosen = Array.from({ length: maxFrames }, (_, i) => pairs[Math.floor((i * pairs.length) / maxFrames)]);
-  }
-  const n = chosen.length * NUM_JOINTS;
-  const x0 = new Float64Array(n * 2), x1 = new Float64Array(n * 2), groups = new Int32Array(n);
-  const frames: { offset: number; handedness: Handedness }[] = [];
-  chosen.forEach((p, g) => {
-    frames.push({ offset: g * NUM_JOINTS, handedness: p.handedness });
+/** Hand pairs as pixel correspondences (21 per hand-frame) for the robust fit. */
+export function toPixelPairs(pairs: HandPair[]): PixelPairs {
+  const n = pairs.length * NUM_JOINTS;
+  const u0 = new Float64Array(n * 2), u1 = new Float64Array(n * 2), groups = new Int32Array(n);
+  pairs.forEach((p, g) => {
     for (let j = 0; j < NUM_JOINTS; j++) {
       const i = g * NUM_JOINTS + j;
-      x0[i * 2] = (p.a[j * 2] - k0.cx) / k0.fx;
-      x0[i * 2 + 1] = (p.a[j * 2 + 1] - k0.cy) / k0.fy;
-      x1[i * 2] = (p.b[j * 2] - k1.cx) / k1.fx;
-      x1[i * 2 + 1] = (p.b[j * 2 + 1] - k1.cy) / k1.fy;
+      u0[i * 2] = p.a[j * 2];
+      u0[i * 2 + 1] = p.a[j * 2 + 1];
+      u1[i * 2] = p.b[j * 2];
+      u1[i * 2 + 1] = p.b[j * 2 + 1];
       groups[i] = g;
     }
   });
-  return { x0, x1, groups, n, frames };
+  const world = pairs.every((p) => p.wa && p.wb) ? pairs.map((p) => ({ w0: p.wa!, w1: p.wb! })) : undefined;
+  return { u0, u1, groups, n, world, handedness: pairs.map((p) => p.handedness) };
 }

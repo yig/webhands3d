@@ -9,9 +9,12 @@ import { readFileSync } from 'node:fs';
 import { describe, it } from 'vitest';
 import { recordedSamples, type Recording, type RecordedView } from '../src/debug/recorder';
 import { median } from '../src/geometry/numeric';
+import { defaultIntrinsics } from '../src/intrinsics';
 import { calibrateStereo, type StereoCalibration, type StereoDiagnostics } from '../src/stereo/calibrate';
 
 const path = process.env.WEBHANDS_RECORDING;
+/** WEBHANDS_REPLAY_FOV=default replays with today's default intrinsics instead of the recorded ones. */
+const useDefaultFov = process.env.WEBHANDS_REPLAY_FOV === 'default';
 
 const pct = (values: number[], p: number) => {
   const s = [...values].sort((a, b) => a - b);
@@ -21,7 +24,8 @@ const deg = (R: ArrayLike<number>) => (Math.acos(Math.min(1, Math.max(-1, (R[0] 
 const fmt = (c: StereoCalibration | null | undefined) =>
   c
     ? `baseline ${(Math.hypot(...c.t) * 100).toFixed(1)} cm, rotation ${deg(c.R).toFixed(1)}°, offset ${c.timeOffsetMs} ms, ` +
-      `epipolar ${c.rmsPx.toFixed(2)} px, inliers ${(c.inlierRatio * 100).toFixed(0)} %, ${c.frames} hand-frames, scale from ${c.scaleFrom}`
+      `epipolar ${c.rmsPx.toFixed(2)} px, inliers ${(c.inlierRatio * 100).toFixed(0)} %, ${c.frames} hand-frames, scale from ${c.scaleFrom}` +
+      (c.warning ? `\n                 WARNING ${c.warning}` : '')
     : 'none';
 
 function describeView(v: RecordedView): string[] {
@@ -49,6 +53,9 @@ function describeView(v: RecordedView): string[] {
 describe.skipIf(!path)('replay recording', () => {
   it('re-runs stereo calibration with diagnostics', () => {
     const rec = JSON.parse(readFileSync(path!, 'utf8')) as Recording;
+    if (useDefaultFov) {
+      for (const v of rec.views) if (v.intrinsics) v.intrinsics = defaultIntrinsics(v.intrinsics.width, v.intrinsics.height);
+    }
     const out: string[] = [
       `${rec.note || 'recording'} at ${rec.createdAt}, ${(rec.durationMs / 1000).toFixed(1)} s, ${rec.views.length} cameras`,
       `browser: ${rec.userAgent}`,
@@ -86,13 +93,13 @@ describe.skipIf(!path)('replay recording', () => {
         out.push(`  replay failed: ${e instanceof Error ? e.message : e}`);
       }
       if (d) {
-        const best = [...d.coarse].sort((a, b) => a.sampsonPx - b.sampsonPx).slice(0, 5);
         out.push(
-          `  coarse offsets (best 5, median Sampson px): ${best.map((c) => `${c.offset}:${c.sampsonPx.toFixed(2)}`).join('  ')}`,
-          `  coarse curve: ${d.coarse.map((c) => `${c.offset}:${c.sampsonPx.toFixed(1)}`).join(' ')}`,
-          `  fine (offset: spread / Sampson px): ${d.fine.map((c) => `${c.offset}:${c.spread.toFixed(3)}/${c.sampsonPx.toFixed(2)}`).join(' ')}`,
-          `  chosen offset ${d.chosenOffsetMs} ms; hand-frames paired: ${d.singleHandPairs} single-hand, ${d.totalPairs} total; ` +
-            `inliers ${d.ransacInliers} (RANSAC) → ${d.finalInliers} of ${d.correspondences}`,
+          `  hand length ${d.handPx.toFixed(0)} px → inlier threshold ${d.thresholdPx.toFixed(1)} px`,
+          `  initial pose (offset 0): median ${d.initialPx.toFixed(2)} px; final: median ${d.finalPx.toFixed(2)} px, ` +
+            `inliers ${d.finalInliers} of ${d.correspondences}`,
+          `  offset search (offset: median px): ${d.coarse.map((c) => `${c.offset}:${c.sampsonPx.toFixed(1)}`).join(' ')}`,
+          `  fine (offset: spread / median px): ${d.fine.map((c) => `${c.offset}:${c.spread.toFixed(3)}/${c.sampsonPx.toFixed(2)}`).join(' ')}`,
+          `  chosen offset ${d.chosenOffsetMs} ms; hand-frames paired: ${d.singleHandPairs} single-hand, ${d.totalPairs} total`,
           `  scale ratios (true/triangulated bone): n ${d.scaleRatios.count}, q25 ${d.scaleRatios.q25.toFixed(3)}, ` +
             `median ${d.scaleRatios.median.toFixed(3)}, q75 ${d.scaleRatios.q75.toFixed(3)}`,
         );

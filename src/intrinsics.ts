@@ -11,6 +11,20 @@ export interface Intrinsics {
 /** Default horizontal field of view for an unknown laptop webcam. */
 export const DEFAULT_HFOV_DEGREES = 60;
 
+/**
+ * Default field of view across an unknown camera's *long* image side. Laptop
+ * webcams and phone main cameras are typically 65–70° across the long side; a
+ * phone held in portrait is then only ~40° across its (short) width, so a
+ * fixed horizontal default would be far off for it.
+ */
+export const DEFAULT_LONG_SIDE_FOV_DEGREES = 66;
+
+/** Default intrinsics for an uncalibrated camera (see DEFAULT_LONG_SIDE_FOV_DEGREES). */
+export function defaultIntrinsics(width: number, height: number): Intrinsics {
+  const f = Math.max(width, height) / 2 / Math.tan((DEFAULT_LONG_SIDE_FOV_DEGREES * Math.PI) / 360);
+  return { fx: f, fy: f, cx: width / 2, cy: height / 2, width, height };
+}
+
 /** Intrinsics from a horizontal field of view, square pixels, centred principal point. */
 export function intrinsicsFromFov(
   width: number,
@@ -74,7 +88,7 @@ export function intrinsicsFromCalibration(
   height: number,
   calibration: StoredCalibration,
 ): Intrinsics {
-  if (calibration.focalOverWidth === undefined) return intrinsicsFromFov(width, height);
+  if (calibration.focalOverWidth === undefined) return defaultIntrinsics(width, height);
   const f = calibration.focalOverWidth * width;
   return { fx: f, fy: f, cx: width / 2, cy: height / 2, width, height };
 }

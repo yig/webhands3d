@@ -32,21 +32,34 @@ export interface StereoSimOptions {
   seed?: number;
   /** Camera 1's frame rate. */
   fps1?: number;
+  /** The cameras' true intrinsics (default K0, K1); calibration may be given other (assumed) ones. */
+  k0?: Intrinsics;
+  k1?: Intrinsics;
+  /** Error of MediaPipe's world-landmark orientation per frame, radians (default 0). */
+  worldRotationNoise?: number;
+  /** Fraction of frames where one camera's landmarks are garbage (MediaPipe failure). */
+  outlierFrames?: number;
 }
 
 /** Simulated onFrame samples from both views, as MonocularHandTracker would report them. */
 export function simulateStereo(options: StereoSimOptions = {}) {
   const { durationMs = 10000, offsetMs = 60, noisePx = 1.5, seed = 7, fps1 = 30 } = options;
+  const { k0 = K0, k1 = K1, worldRotationNoise = 0, outlierFrames = 0 } = options;
   const r = rng(seed);
+  const gauss = () => (r() + r() + r() + r() + r() + r()) / Math.sqrt(2);
   const samples0: Hand3D[] = [];
   const samples1: Hand3D[] = [];
   const make = (t: number, view: 0 | 1, reported: number): Hand3D => {
     const { rotation, joints } = handAt(t);
-    const k = view === 0 ? K0 : K1;
+    const k = view === 0 ? k0 : k1;
     const inView = view === 0 ? joints : toCamera1(joints);
-    const image = projectPoints(inView, k).map((v) => v + r() * noisePx);
-    // MediaPipe-like world landmarks in this view's axes, with a per-frame size error.
-    const R = view === 0 ? rotation : mul3(R01, rotation);
+    const garbage = Math.abs(r()) < outlierFrames;
+    const image = projectPoints(inView, k).map((v, i) =>
+      garbage ? (i % 2 ? k.height : k.width) * (0.5 + 0.4 * r()) : v + gauss() * noisePx,
+    );
+    // MediaPipe-like world landmarks in this view's axes, with a per-frame size and orientation error.
+    const wobble = rodrigues(gauss() * worldRotationNoise, gauss() * worldRotationNoise, gauss() * worldRotationNoise);
+    const R = mul3(wobble, view === 0 ? rotation : mul3(R01, rotation));
     const size = 1 + r() * 0.1;
     const world = transformPoints(HAND, { rotation: R, translation: new Float64Array(3) }).map((v) => v * size + r() * 0.002);
     return {

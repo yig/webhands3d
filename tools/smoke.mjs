@@ -79,6 +79,115 @@ await phone.close();
 await host.waitForTimeout(7000);
 check((await tiles(host)).length === 0, 'phone tile disappears when the phone leaves');
 
+// ---------- Calibration UI with synthetic video (no camera needed) ----------
+const lib = await page('/pattern.html', 'calibration');
+const srcUrl = `/@fs${process.cwd().replace(/ /g, '%20')}/src/index.ts`;
+
+// Edge snapping: a white rounded rectangle on grey, clicked a few px off, accepted with Enter.
+const truth = [400, 220, 860, 260, 820, 520, 380, 470];
+await lib.evaluate(async ({ srcUrl, truth }) => {
+  const canvas = document.createElement('canvas');
+  canvas.width = 1280;
+  canvas.height = 720;
+  const ctx = canvas.getContext('2d');
+  const draw = () => {
+    ctx.fillStyle = '#505050';
+    ctx.fillRect(0, 0, 1280, 720);
+    ctx.fillStyle = '#e8e8e8';
+    ctx.beginPath();
+    ctx.moveTo(truth[0], truth[1]);
+    for (let i = 2; i < 8; i += 2) ctx.lineTo(truth[i], truth[i + 1]);
+    ctx.closePath();
+    ctx.fill();
+    requestAnimationFrame(draw);
+  };
+  draw();
+  const video = document.createElement('video');
+  video.muted = true;
+  video.srcObject = canvas.captureStream(30);
+  Object.assign(video.style, { position: 'fixed', left: '0', top: '0', width: '640px', height: '360px', zIndex: 10 });
+  document.body.append(video);
+  await video.play();
+  await new Promise((r) => setTimeout(r, 500));
+  const lib = await import(srcUrl);
+  window.__picked = lib.pickRectangle(video);
+}, { srcUrl, truth });
+for (let i = 0; i < 4; i++) {
+  await lib.mouse.click(truth[i * 2] / 2 + [3, -2, 2, -3][i], truth[i * 2 + 1] / 2 + [2, 3, -2, -2][i]);
+}
+await lib.waitForTimeout(300);
+await lib.keyboard.press('Enter');
+const picked = await lib.evaluate(async () => {
+  const r = await window.__picked;
+  return { corners: Array.from(r.corners), snapped: r.snapped };
+});
+const cornerErr = Math.max(...picked.corners.map((v, i) => Math.abs(v - truth[i])));
+check(picked.snapped && cornerErr < 1.5, `rectangle corners snap to the edges (max error ${cornerErr.toFixed(2)} px)`);
+
+// Pattern: what showCalibrationPattern draws is what detectPattern finds.
+const shown = await lib.evaluate(async (srcUrl) => {
+  const lib = await import(srcUrl);
+  const host = document.createElement('div');
+  Object.assign(host.style, { position: 'fixed', left: '0', top: '0', width: '390px', height: '844px' });
+  document.body.append(host);
+  const handle = lib.showCalibrationPattern({ container: host });
+  await new Promise((r) => setTimeout(r, 200));
+  const c = host.querySelector('canvas');
+  const found = lib.detectPattern(c.getContext('2d').getImageData(0, 0, c.width, c.height));
+  handle.close();
+  host.remove();
+  if (!found) return null;
+  const d = (i, j) => Math.hypot(found[i * 2] - found[j * 2], found[i * 2 + 1] - found[j * 2 + 1]);
+  return { sides: [d(0, 1), d(1, 2), d(2, 3), d(3, 0)], diagonals: [d(0, 2), d(1, 3)] };
+}, srcUrl);
+check(
+  shown && Math.max(...shown.sides) / Math.min(...shown.sides) < 1.01 && Math.abs(shown.diagonals[0] / shown.diagonals[1] - 1) < 0.01,
+  'the displayed pattern is detected as a square',
+);
+
+// Pattern calibration from a synthetic camera: the pattern tilting in front of a 64° camera.
+const focal = await lib.evaluate(async (srcUrl) => {
+  const lib = await import(srcUrl);
+  const k = lib.intrinsicsFromFov(1280, 720, 64);
+  const canvas = document.createElement('canvas');
+  canvas.width = 1280;
+  canvas.height = 720;
+  const ctx = canvas.getContext('2d');
+  const start = performance.now();
+  const r = 0.09 / 0.82; // disk radius relative to centre spacing
+  const draw = () => {
+    const s = (performance.now() - start) / 1000;
+    const tilt = 0.6, axis = s * 1.3;
+    const R = lib.rodrigues(tilt * Math.cos(axis), tilt * Math.sin(axis), 0.2);
+    const t = Float64Array.of(0.02 * Math.sin(s), 0, 0.3);
+    const P = (x, y) => lib.projectPoints(lib.transformPoints([(x - 0.5) * 0.05, (y - 0.5) * 0.05, 0], { rotation: R, translation: t }), k);
+    ctx.fillStyle = '#6e6e6a';
+    ctx.fillRect(0, 0, 1280, 720);
+    ctx.fillStyle = '#080808';
+    ctx.beginPath();
+    for (const [x, y] of [[-0.35, -0.35], [1.35, -0.35], [1.35, 1.35], [-0.35, 1.35]]) ctx.lineTo(...P(x, y));
+    ctx.fill();
+    ctx.fillStyle = '#10f010';
+    for (const [cx, cy] of [[0, 0], [1, 0], [1, 1], [0, 1]]) {
+      ctx.beginPath();
+      for (let i = 0; i < 48; i++) ctx.lineTo(...P(cx + r * Math.cos((i / 48) * 2 * Math.PI), cy + r * Math.sin((i / 48) * 2 * Math.PI)));
+      ctx.fill();
+    }
+    requestAnimationFrame(draw);
+  };
+  draw();
+  const video = document.createElement('video');
+  video.muted = true;
+  video.srcObject = canvas.captureStream(30);
+  document.body.append(video);
+  await video.play();
+  const tracker = { intrinsics: lib.defaultIntrinsics(1280, 720), handScale: 1, skeletons: {}, cameraId: 'synthetic', onFrame: () => () => {} };
+  const cal = new lib.Calibrator(tracker);
+  const f = await lib.calibrateFromPattern(video, cal, () => tracker.intrinsics, { views: 8, timeoutMs: 30000 });
+  return { f, truth: k.fx };
+}, srcUrl);
+check(Math.abs(focal.f / focal.truth - 1) < 0.02, `pattern calibration from video (focal ${focal.f.toFixed(0)} px, true ${focal.truth.toFixed(0)})`);
+
 check(errors.length === 0, `no page errors${errors.length ? ':\n  ' + errors.join('\n  ') : ''}`);
 await browser.close();
 process.exit(failures ? 1 : 0);

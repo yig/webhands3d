@@ -4,7 +4,8 @@ import {
   MonocularHandTracker,
   listCameras,
   openCamera,
-  pickCorners,
+  pickRectangle,
+  calibrateFromPattern,
   type CalibrationStatus,
   type CameraHandle,
   type DepthMethod,
@@ -79,7 +80,7 @@ tracker.onFrame((hands) => {
 });
 
 // ---------- controls ----------
-// Everything below uses only the public calibration API (tracker.calibrator, pickCorners).
+// Everything below uses only the public calibration API (tracker.calibrator, pickRectangle).
 const cal = tracker.calibrator;
 
 async function startCamera(deviceId?: string) {
@@ -176,21 +177,25 @@ calScale.addEventListener('click', () =>
 // --- Step 2: focal length, from clicking a known rectangle's corners, or hand distance ---
 const focalRef = $<HTMLSelectElement>('focalRef');
 focalRef.append(
+  new Option('Pattern on another screen (best)', 'pattern'),
   ...KNOWN_RECTANGLES.map((o) => new Option(o.label, o.id)),
   new Option('Hand at a measured distance', 'distance'),
 );
-focalRef.value = 'a4';
+focalRef.value = 'pattern';
 const calFocal = $<HTMLButtonElement>('calFocal');
 function updateFocalUi() {
   const distance = focalRef.value === 'distance';
+  const pattern = focalRef.value === 'pattern';
   $('distanceRow').hidden = !distance;
   $('focalHint').textContent = distance
     ? 'Needs step 1 first. Hold the hand centred in view at the measured distance.'
-    : 'Hold the object tilted 30–60° away from the camera (any direction), flat (paper on a book or ' +
-      'clipboard), as large as possible in view. ' +
-      'Freeze, then click its 4 corners in order around the edge (Esc cancels). Paper is much ' +
-      'more accurate than a card; add several views.';
-  calFocal.textContent = distance ? 'Calibrate distance' : 'Freeze & click corners';
+    : pattern
+      ? `On a phone or tablet, open ${location.origin}/pattern.html (four green dots). Click below, then hold ` +
+        'that screen up to this camera and tilt it 30–60° in different directions until 8 views are taken.'
+      : 'Hold the object tilted 30–60° away from the camera (any direction), flat (paper on a book or ' +
+        'clipboard), as large as possible in view. Freeze, then click near its 4 corners in order around ' +
+        'the edge; they snap to its edges (Esc cancels). Add several views.';
+  calFocal.textContent = distance ? 'Calibrate distance' : pattern ? 'Start' : 'Freeze & click corners';
   cal.clearRectangleViews();
 }
 focalRef.addEventListener('change', updateFocalUi);
@@ -204,10 +209,21 @@ calFocal.addEventListener('click', () => {
     });
     return;
   }
-  runStep(calFocal, 'Click the 4 corners in order around the edge', async () => {
-    const corners = await pickCorners(video, { mirrored: mirrorInput.checked });
+  if (focalRef.value === 'pattern') {
+    runStep(calFocal, 'Show the pattern to the camera…', async () => {
+      const f = await calibrateFromPattern(video, cal, () => tracker.intrinsics, {
+        onProgress: ({ views, needed, seen }) => {
+          status.textContent = `${seen ? 'Pattern seen' : 'Looking for the pattern'}; ${views} of ${needed} views. Tilt it in different directions.`;
+        },
+      });
+      return `Focal ${f.toFixed(0)} px (FOV ${fovInput.value}°) from the screen pattern`;
+    });
+    return;
+  }
+  runStep(calFocal, 'Click near the 4 corners in order around the edge (they snap to the edges)', async () => {
+    const { corners, snapped } = await pickRectangle(video, { mirrored: mirrorInput.checked });
     const f = cal.addRectangleView(corners, focalRef.value);
-    return `Focal ${f.toFixed(0)} px (FOV ${fovInput.value}°). Add more views to average.`;
+    return `Focal ${f.toFixed(0)} px (FOV ${fovInput.value}°)${snapped ? '' : ' from your clicks (edges not found)'}. Add more views to average.`;
   });
 });
 

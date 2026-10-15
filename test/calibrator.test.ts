@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { CalibrationError, Calibrator, type CalibratableTracker } from '../src/calibration/calibrator';
 import { KNOWN_RECTANGLES } from '../src/calibration/objects';
+import { intrinsicsFromCalibration, type StoredCalibration } from '../src/intrinsics';
 import { projectPoints, rodrigues, transformPoints } from '../src/geometry/solvePose';
 import type { HandFrameListener, Hand3D } from '../src/types';
 import { asHand, K, rng, simulate, TRUE_LENGTHS } from './sim';
@@ -104,6 +105,18 @@ describe('Calibrator', () => {
     const step = cal.handSizeFromLength(0.19, { durationMs: 1000, signal: controller.signal });
     controller.abort();
     await expect(step).rejects.toMatchObject({ code: 'aborted' });
+  });
+
+  it('keeps the focal length when the camera rotates between landscape and portrait', () => {
+    const tracker = new FakeTracker();
+    const cal = new Calibrator(tracker);
+    cal.setFieldOfView(70);
+    const fx = tracker.intrinsics!.fx;
+    const stored = (cal as unknown as { stored: StoredCalibration }).stored;
+    const portrait = intrinsicsFromCalibration(720, 1280, stored);
+    expect(portrait.fx).toBeCloseTo(fx, 6);
+    // Older stored format (relative to width) still loads.
+    expect(intrinsicsFromCalibration(1280, 720, { focalOverWidth: fx / 1280 }).fx).toBeCloseTo(fx, 6);
   });
 
   it('reset returns the tracker to defaults', async () => {

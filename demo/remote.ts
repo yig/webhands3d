@@ -6,7 +6,9 @@ import {
   httpSignaling,
   listCameras,
   openCamera,
-  pickCorners,
+  pickRectangle,
+  calibrateFromPattern,
+  showCalibrationPattern,
   randomId,
   type CameraHandle,
   type Link,
@@ -114,14 +116,39 @@ fovInput.addEventListener('change', () => {
 });
 mirrorInput.addEventListener('change', () => $('videoWrap').classList.toggle('mirror', mirrorInput.checked));
 
+const fromScreen = $<HTMLButtonElement>('fromScreen');
+fromScreen.addEventListener('click', async () => {
+  if (!tracker.intrinsics) {
+    status.textContent = 'Start the camera first';
+    return;
+  }
+  fromScreen.disabled = true;
+  try {
+    const f = await calibrateFromPattern(video, tracker.calibrator, () => tracker.intrinsics, {
+      onProgress: ({ views, needed, seen }) => {
+        status.textContent = `${seen ? 'Pattern seen' : 'Looking for the pattern'}; ${views} of ${needed} views. Tilt the phone.`;
+      },
+    });
+    status.textContent = `Focal ${f.toFixed(0)} px from the screen pattern`;
+  } catch (e) {
+    status.textContent = e instanceof Error ? e.message : String(e);
+  } finally {
+    fromScreen.disabled = false;
+  }
+});
+$('showPattern').addEventListener('click', () =>
+  showCalibrationPattern({ message: 'Hold this up to the computer camera, tilting it · tap to close' }),
+);
+
 const paper = $<HTMLButtonElement>('paper');
 paper.addEventListener('click', async () => {
   if (!tracker.intrinsics) return;
   paper.disabled = true;
-  status.textContent = 'Tap the 4 corners of the A4 sheet in order around its edge';
+  status.textContent = 'Tap near the 4 corners in order around the edge';
   try {
-    const f = tracker.calibrator.addRectangleView(await pickCorners(video, { mirrored: mirrorInput.checked }), 'a4');
-    status.textContent = `Focal ${f.toFixed(0)} px. Add more views to average.`;
+    const { corners, snapped } = await pickRectangle(video, { mirrored: mirrorInput.checked });
+    const f = tracker.calibrator.addRectangleView(corners, $<HTMLSelectElement>('object').value);
+    status.textContent = `Focal ${f.toFixed(0)} px${snapped ? '' : ' (edges not found; used taps)'}. Add more views to average.`;
   } catch (e) {
     status.textContent = e instanceof Error ? e.message : String(e);
   } finally {

@@ -10,7 +10,9 @@ import {
   httpSignaling,
   listCameras,
   openCamera,
-  pickCorners,
+  pickRectangle,
+  calibrateFromPattern,
+  showCalibrationPattern,
   randomId,
   type CameraHandle,
   type Hand3D,
@@ -91,16 +93,33 @@ function addControls(view: View, bar: HTMLElement) {
       const v = parseFloat(fov.value);
       if (v > 0) cal.setFieldOfView(v);
     });
+    const object = document.createElement('select');
+    object.title = 'Object to click: hold it flat, tilted 30–60°, as large as possible in view';
+    object.append(new Option('A4', 'a4'), new Option('Letter', 'letter'), new Option('Card', 'card'));
     const paper = document.createElement('button');
-    paper.textContent = 'A4';
-    paper.title = 'Click the corners of a flat sheet of A4 (on a book or clipboard) tilted 30–60°';
+    paper.textContent = 'Corners';
+    paper.title = 'Click near the 4 corners of the object (they snap to its edges)';
     paper.addEventListener('click', () =>
-      runStep(paper, `Click the 4 corners of the A4 sheet in ${view.name} (Esc cancels)`, async () => {
-        const f = cal.addRectangleView(await pickCorners(view.video!, { mirrored: true }), 'a4');
-        return `${view.name}: focal ${f.toFixed(0)} px. Add more views to average.`;
+      runStep(paper, `Click near the 4 corners in ${view.name}; they snap to the edges (Esc cancels)`, async () => {
+        const { corners, snapped } = await pickRectangle(view.video!, { mirrored: true });
+        const f = cal.addRectangleView(corners, object.value);
+        return `${view.name}: focal ${f.toFixed(0)} px${snapped ? '' : ' (edges not found; used clicks)'}. Add more views to average.`;
       }),
     );
-    bar.append(paper);
+    const screen = document.createElement('button');
+    screen.textContent = 'Screen';
+    screen.title = 'Calibrate from the pattern on a phone screen held up to this camera';
+    screen.addEventListener('click', () =>
+      runStep(screen, `Hold the phone's pattern up to ${view.name}…`, async () => {
+        const f = await calibrateFromPattern(view.video!, cal, () => view.source.intrinsics, {
+          onProgress: ({ views, needed, seen }) => {
+            status.textContent = `${view.name}: ${seen ? 'pattern seen' : 'looking for the pattern'}; ${views} of ${needed} views. Tilt it in different directions.`;
+          },
+        });
+        return `${view.name}: focal ${f.toFixed(0)} px from the screen pattern`;
+      }),
+    );
+    bar.append(object, paper, screen);
     cal.onChange(render);
   } else {
     fov.disabled = true;
@@ -361,6 +380,10 @@ record.addEventListener('click', () =>
     downloadRecording(recorder.stop('tracking'));
     return 'Recording downloaded';
   }),
+);
+
+$('showPattern').addEventListener('click', () =>
+  showCalibrationPattern({ message: 'Point the phone camera here · click to close' }),
 );
 
 $('reset').addEventListener('click', () => {

@@ -20,10 +20,11 @@ calibrate using objects you probably have (no ruler needed):
 1. **Hand size**: pick an object (credit card, AA battery, …), hold it by its
    two ends between thumb tip and index fingertip, click **Calibrate hand size**.
    Or enter your measured hand length.
-2. **Focal length**: pick a rectangle (A4 / Letter paper is most accurate),
-   hold it tilted ~45° away from the camera, click **Freeze & click corners**
-   and click its 4 corners. Repeat for a few views. Or hold your hand at a
-   measured distance.
+2. **Focal length**: easiest and most accurate, open `/pattern.html` on a phone
+   or tablet and hold its screen up to the camera, tilting it, after clicking
+   **Start**. Or hold a credit card or a sheet of paper (flat, on a book) tilted
+   30–60°, click **Freeze & click corners** and click near its 4 corners; they
+   snap to the edges. Or hold your hand at a measured distance.
 3. **Hand skeleton** (bone lengths and palm shape; fixes distance drifting with
    pose and tilted hands being pushed back): show both hands and slowly turn
    them in every direction for 8 s.

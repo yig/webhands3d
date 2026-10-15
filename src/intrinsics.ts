@@ -48,10 +48,16 @@ export function scaleIntrinsics(k: Intrinsics, width: number, height: number): I
 
 /**
  * Per-camera calibration stored in localStorage. Focal length is stored relative
- * to image width so it survives resolution changes (assuming no cropping).
+ * to the image's long side so it survives rotation and resolution changes
+ * (assuming no cropping).
  */
 export interface StoredCalibration {
-  /** fx / width. */
+  /**
+   * fx / the image's long side, so it survives rotating the camera between
+   * portrait and landscape (and resolution changes that don't crop).
+   */
+  focalOverLongSide?: number;
+  /** Older format: fx / width (wrong after rotating the camera). Read if focalOverLongSide is absent. */
   focalOverWidth?: number;
   /** Multiplier applied to MediaPipe's world landmarks (1 = MediaPipe's average hand). */
   handScale?: number;
@@ -88,7 +94,12 @@ export function intrinsicsFromCalibration(
   height: number,
   calibration: StoredCalibration,
 ): Intrinsics {
-  if (calibration.focalOverWidth === undefined) return defaultIntrinsics(width, height);
-  const f = calibration.focalOverWidth * width;
+  const f =
+    calibration.focalOverLongSide !== undefined
+      ? calibration.focalOverLongSide * Math.max(width, height)
+      : calibration.focalOverWidth !== undefined
+        ? calibration.focalOverWidth * width
+        : undefined;
+  if (f === undefined) return defaultIntrinsics(width, height);
   return { fx: f, fy: f, cx: width / 2, cy: height / 2, width, height };
 }

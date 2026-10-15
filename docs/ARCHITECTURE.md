@@ -35,9 +35,12 @@ src/
   geometry/skeleton.ts     placeSkeleton: rigid palm fit + per-bone ray–sphere (default placement)
   calibration/index.ts     hand-scale and focal-length calibration from hand samples
   calibration/objects.ts   known-size everyday objects; grip scale; focal from a clicked rectangle
+  calibration/edges.ts     snap rough rectangle corners to fitted edge lines (sub-pixel; rounded corners)
+  calibration/pattern.ts   screen calibration pattern: layout and detection (4 green disks, square)
   calibration/bones.ts     per-hand skeleton calibration: bone lengths (longest appearance) + palm template
   calibration/calibrator.ts Calibrator: runs steps against a tracker, applies + saves results (headless)
-  ui/pickCorners.ts        freeze-frame overlay to click a rectangle's corners (optional UI helper)
+  ui/pickCorners.ts        freeze-frame overlay: pickRectangle (click, snap to edges, confirm), pickCorners
+  ui/pattern.ts            showCalibrationPattern (display) and calibrateFromPattern (auto-collect views)
   backends/monocular.ts    MonocularHandTracker (MediaPipe + solvePose + smoothing)
   backends/assemble.ts     detections → Hand3D (placement + smoothing), shared by local and remote cameras
   backends/multiview.ts    MultiViewHandTracker: N ViewSources, triangulation, skeleton measurement
@@ -263,6 +266,44 @@ hand moves back"), and is why `'skeleton'` is now the default: its error doesn't
 depend on MediaPipe's z at all. Its remaining joint error is mostly overall
 placement from 2D noise (~10 mm at 45–80 cm). Skeleton calibration recovers bone
 lengths to < 6 % RMS even with z × 0.5.
+
+**Only the rectangle's shape matters.** The constraints r1 ⟂ r2, |r1| = |r2|
+are unchanged by scaling the rectangle, so focal length needs only its aspect
+ratio, not its size. Two consequences:
+
+*Edge snapping* (`refineRectangleCorners`, used by `pickRectangle`): clicks are
+only good to 1–2 px, a large error for a small object, and a credit card's
+corners are rounded (r = 3.18 mm), so there is no sharp corner to click. For
+each side, 40 intensity profiles across its middle 70 % (avoiding rounded
+corners) give sub-pixel edge positions (strongest gradient, parabola
+peak; one polarity per side); a line is fitted (2-point RANSAC + total least
+squares) and adjacent lines intersected into the virtual sharp corners. The
+fitted edges are shown for confirmation (Use / Redo / Cancel). Simulated card
+at 35 cm (rendered, anti-aliased, noisy): focal error 10 % from clicks → 0.3 %
+snapped. Verified in Chrome on a canvas-stream video: snapped corners within
+0.6 px of truth from clicks 2–3 px off.
+
+*Screen pattern* (`showCalibrationPattern`, `calibrateFromPattern`): one device
+shows four saturated-green disks at the corners of the largest centred square
+(78 % of the short side) on black; the other device's camera detects them
+automatically (green mask → connected blobs → the 4 compact, similar-size,
+well-separated blobs forming a convex quad → greenness-weighted centroids at
+full resolution) and collects 8 views that differ by > 4 % of the image width
+and are tilted enough, using the median. A screen is perfectly flat and its
+pixels square, so the disk centres are an exact square on any device — the
+detecting camera needs no information about the displaying screen. Simulated
+6 cm square on a phone at 30–40 cm, with a lamp and green-ish clutter in view:
+0.2–0.7 % focal error per view; Chrome end-to-end on a moving canvas-stream
+pattern: 1023 px vs true 1024. In the demo: phone "Show pattern" + the
+laptop tile's "Screen" calibrates the laptop camera; "Show pattern on this
+screen" + the phone's "Calibrate from screen" calibrates the phone camera;
+`/pattern.html` shows the pattern on any device. Calibrating intrinsics is
+independent of where the camera is, so cameras can be moved afterwards (then
+recalibrate the camera positions).
+
+**Rotation**: focal length is stored relative to the image's long side
+(`focalOverLongSide`; older `focalOverWidth` still read), so a phone
+calibrated in landscape stays right in portrait and vice versa.
 
 Without calibration: s = 1 (MediaPipe's average hand) and a 60° horizontal FOV.
 Lateral position error scales with focal error; depth error scales with both.

@@ -63,7 +63,14 @@ export {
   type CollectOptions,
   type PrerequisiteOptions,
 } from './calibration/calibrator';
-export { pickCorners, type PickCornersOptions } from './ui/pickCorners';
+export {
+  pickCorners,
+  pickRectangle,
+  type PickCornersOptions,
+  type PickRectangleOptions,
+  type PickedRectangle,
+} from './ui/pickCorners';
+export { refineRectangleCorners, type EdgeFit, type EdgeFitOptions, type ImageLike, type Line } from './calibration/edges';
 export {
   MultiViewHandTracker,
   toCamera0,
@@ -124,3 +131,10 @@ export {
   type RecordedView,
 } from './debug/recorder';
 export type { StereoDiagnostics } from './stereo/calibrate';
+export { PATTERN_LAYOUT, PATTERN_SQUARE, detectPattern, type PatternDetectionOptions } from './calibration/pattern';
+export {
+  calibrateFromPattern,
+  showCalibrationPattern,
+  type PatternCalibrationOptions,
+  type ShowPatternOptions,
+} from './ui/pattern';

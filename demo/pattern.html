@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <link rel="icon" href="data:," />
+    <title>webhands calibration pattern</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #000; color: #777; font: 16px system-ui, sans-serif; }
+      button { position: fixed; inset: 0; width: 100%; background: #000; color: #aaa; border: 0; font: inherit; }
+    </style>
+  </head>
+  <body>
+    <button id="go">Tap to show the calibration pattern<br /><br />Then hold this screen up to the camera
+      and tilt it 30–60° in different directions. Tap again to close.</button>
+    <script type="module">
+      import { showCalibrationPattern } from '../src/ui/pattern.ts';
+      document.getElementById('go').addEventListener('click', () => showCalibrationPattern());
+    </script>
+  </body>
+</html>

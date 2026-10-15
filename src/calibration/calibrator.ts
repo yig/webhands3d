@@ -102,7 +102,7 @@ export class Calibrator {
       cameraId: this.tracker.cameraId,
       handSize: { calibrated: s.handScale !== undefined, scale: this.tracker.handScale },
       focal: {
-        calibrated: s.focalOverWidth !== undefined,
+        calibrated: s.focalOverLongSide !== undefined || s.focalOverWidth !== undefined,
         fx: k?.fx ?? null,
         hfovDegrees: k ? fovFromIntrinsics(k) : null,
         views: [...this.views],
@@ -272,7 +272,7 @@ export class Calibrator {
   private applyFocal(f: number): void {
     const k = this.requireIntrinsics();
     this.tracker.intrinsics = { ...k, fx: f, fy: f };
-    this.save({ focalOverWidth: f / k.width });
+    this.save({ focalOverLongSide: f / Math.max(k.width, k.height), focalOverWidth: undefined });
   }
 
   private save(patch: Partial<StoredCalibration>): void {

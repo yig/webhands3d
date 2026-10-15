@@ -6,17 +6,17 @@ import {
   openCamera,
   pickRectangle,
   calibrateFromPattern,
+  PATTERN_ADVICE,
   type CalibrationStatus,
   type CameraHandle,
   type DepthMethod,
   type Hand3D,
 } from '../src';
-import { cm, createHandScene, drawHandOverlay, fpsCounter } from './shared';
+import { cm, createHandScene, drawHandOverlay, errorText, fpsCounter, say, stoppableButton } from './shared';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const video = $<HTMLVideoElement>('video');
 const overlay = $<HTMLCanvasElement>('overlay');
-const status = $<HTMLDivElement>('status');
 const readout = $<HTMLDivElement>('readout');
 const cameraSelect = $<HTMLSelectElement>('camera');
 const fovInput = $<HTMLInputElement>('fov');
@@ -86,11 +86,11 @@ const cal = tracker.calibrator;
 async function startCamera(deviceId?: string) {
   tracker.stop();
   camera?.stop();
-  status.textContent = 'Opening camera…';
+  say('Opening camera…');
   camera = await openCamera({ video, deviceId });
-  status.textContent = 'Loading MediaPipe…';
+  say('Loading MediaPipe…');
   await tracker.start();
-  status.textContent = camera.label;
+  say(camera.label);
   renderCalibration(cal.status);
   await populateCameras(camera.cameraId);
 }
@@ -103,10 +103,10 @@ async function populateCameras(selected: string) {
 }
 
 $('start').addEventListener('click', () =>
-  startCamera().catch((e) => (status.textContent = String(e))),
+  startCamera().catch((e) => say(errorText(e), 'error')),
 );
 cameraSelect.addEventListener('change', () =>
-  startCamera(cameraSelect.value).catch((e) => (status.textContent = String(e))),
+  startCamera(cameraSelect.value).catch((e) => say(errorText(e), 'error')),
 );
 const mirrorInput = $<HTMLInputElement>('mirror');
 mirrorInput.addEventListener('change', () => $('videoWrap').classList.toggle('mirror', mirrorInput.checked));
@@ -132,11 +132,11 @@ cal.onChange(renderCalibration);
 /** Run a calibration step with its button disabled, reporting the outcome in the status line. */
 async function runStep(button: HTMLButtonElement, hint: string, step: () => Promise<string>) {
   button.disabled = true;
-  status.textContent = hint;
+  say(hint, 'busy');
   try {
-    status.textContent = await step();
+    say(await step(), 'ok');
   } catch (e) {
-    status.textContent = e instanceof Error ? e.message : String(e);
+    say(errorText(e), 'error');
   } finally {
     button.disabled = false;
   }
@@ -201,6 +201,26 @@ function updateFocalUi() {
 focalRef.addEventListener('change', updateFocalUi);
 updateFocalUi();
 
+// Pattern calibration runs from its own Start/Stop button.
+const patternButton = document.createElement('button');
+patternButton.textContent = 'Start';
+calFocal.after(patternButton);
+const showFocalButtons = () => {
+  const pattern = focalRef.value === 'pattern';
+  patternButton.hidden = !pattern;
+  calFocal.hidden = pattern;
+};
+focalRef.addEventListener('change', showFocalButtons);
+showFocalButtons();
+stoppableButton(patternButton, 'Show the pattern to the camera…', async (signal) => {
+  const f = await calibrateFromPattern(video, cal, () => tracker.intrinsics, {
+    signal,
+    feedback: { mirrored: mirrorInput.checked },
+    onProgress: ({ views, needed, state }) => say(`${PATTERN_ADVICE[state]} · ${views} of ${needed} views`, 'busy'),
+  });
+  return `Focal ${f.toFixed(0)} px (FOV ${fovInput.value}°) from the screen pattern`;
+});
+
 calFocal.addEventListener('click', () => {
   if (focalRef.value === 'distance') {
     runStep(calFocal, 'Hold still…', async () => {
@@ -209,17 +229,7 @@ calFocal.addEventListener('click', () => {
     });
     return;
   }
-  if (focalRef.value === 'pattern') {
-    runStep(calFocal, 'Show the pattern to the camera…', async () => {
-      const f = await calibrateFromPattern(video, cal, () => tracker.intrinsics, {
-        onProgress: ({ views, needed, seen }) => {
-          status.textContent = `${seen ? 'Pattern seen' : 'Looking for the pattern'}; ${views} of ${needed} views. Tilt it in different directions.`;
-        },
-      });
-      return `Focal ${f.toFixed(0)} px (FOV ${fovInput.value}°) from the screen pattern`;
-    });
-    return;
-  }
+  if (focalRef.value === 'pattern') return; // handled by patternButton below
   runStep(calFocal, 'Click near the 4 corners in order around the edge (they snap to the edges)', async () => {
     const { corners, snapped } = await pickRectangle(video, { mirrored: mirrorInput.checked });
     const f = cal.addRectangleView(corners, focalRef.value);
@@ -233,9 +243,11 @@ calBones.addEventListener('click', () =>
   runStep(calBones, 'Turn both hands slowly in every direction…', async () => {
     const result = await cal.skeleton({
       onProgress: ({ elapsedMs, durationMs, frames }) => {
-        status.textContent =
+        say(
           `Turn both hands slowly in every direction… ${Math.ceil((durationMs - elapsedMs) / 1000)} s ` +
-          `(left ${frames.Left}, right ${frames.Right} frames)`;
+          `(left ${frames.Left}, right ${frames.Right} frames)`,
+          'busy',
+          );
       },
     });
     const totals = (['Left', 'Right'] as const)
@@ -247,5 +259,5 @@ calBones.addEventListener('click', () =>
 
 $('calReset').addEventListener('click', () => {
   cal.reset();
-  status.textContent = 'Calibration reset';
+  say('Calibration reset');
 });

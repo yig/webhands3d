@@ -8,17 +8,17 @@ import {
   openCamera,
   pickRectangle,
   calibrateFromPattern,
+  PATTERN_ADVICE,
   showCalibrationPattern,
   randomId,
   type CameraHandle,
   type Link,
 } from '../src';
-import { drawHandOverlay, fpsCounter } from './shared';
+import { drawHandOverlay, errorText, fpsCounter, say, stoppableButton } from './shared';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const video = $<HTMLVideoElement>('video');
 const overlay = $<HTMLCanvasElement>('overlay');
-const status = $<HTMLDivElement>('status');
 const cameraSelect = $<HTMLSelectElement>('camera');
 const roomInput = $<HTMLInputElement>('room');
 const fovInput = $<HTMLInputElement>('fov');
@@ -48,7 +48,10 @@ tracker.onFrame((hands) => {
   if (!k) return;
   drawHandOverlay(overlay, k, hands.flatMap((h) => (h.debug?.landmarks2d ? [h.debug.landmarks2d] : [])), []);
   const rate = fps();
-  if (link?.open) status.textContent = `Connected · ${rate.toFixed(0)} fps · ${hands.length} hand(s) · ${sender?.framesSent ?? 0} frames sent`;
+  // Live numbers in their own line, so the banner keeps event messages.
+  $('connection').textContent = link?.open
+    ? `Connected · ${rate.toFixed(0)} fps · ${hands.length} hand(s) · ${sender?.framesSent ?? 0} frames sent`
+    : `Not connected · camera ${rate.toFixed(0)} fps`;
 });
 tracker.calibrator.onChange((s) => {
   if (s.focal.hfovDegrees !== null && document.activeElement !== fovInput) fovInput.value = s.focal.hfovDegrees.toFixed(1);
@@ -72,23 +75,24 @@ async function start() {
   tracker.stop();
   camera?.stop();
 
-  status.textContent = 'Opening camera…';
+  say('Opening camera…', 'busy');
   camera = await openCamera({ video, deviceId: cameraSelect.value || undefined });
   mirrorInput.checked = !/back|rear|environment/i.test(camera.label);
   $('videoWrap').classList.toggle('mirror', mirrorInput.checked);
-  status.textContent = 'Loading MediaPipe…';
+  say('Loading MediaPipe…', 'busy');
   await tracker.start();
   fovInput.value = fovFromIntrinsics(tracker.intrinsics!).toFixed(1);
   await populateCameras();
 
-  status.textContent = 'Connecting to the computer…';
+  say('Connecting to the computer…', 'busy');
   link = await connectToHost(httpSignaling(location.origin, room));
   sender = new RemoteCameraSender(tracker, link, {
     cameraId: `${deviceToken()}:${tracker.cameraId}`,
     label: camera.label || 'Phone',
   });
   sender.start();
-  link.onClose(() => (status.textContent = 'Disconnected. Tap "Start & connect" to reconnect.'));
+  say('Connected to the computer', 'ok');
+  link.onClose(() => say('Disconnected. Tap "Start & connect" to reconnect.', 'error'));
   // Keep the screen on while streaming.
   try {
     await (navigator as Navigator & { wakeLock?: { request(type: 'screen'): Promise<unknown> } }).wakeLock?.request('screen');
@@ -104,7 +108,7 @@ startButton.addEventListener('click', async () => {
   try {
     await start();
   } catch (e) {
-    status.textContent = e instanceof Error ? e.message : String(e);
+    say(errorText(e), 'error');
   } finally {
     startButton.disabled = false;
   }
@@ -116,25 +120,14 @@ fovInput.addEventListener('change', () => {
 });
 mirrorInput.addEventListener('change', () => $('videoWrap').classList.toggle('mirror', mirrorInput.checked));
 
-const fromScreen = $<HTMLButtonElement>('fromScreen');
-fromScreen.addEventListener('click', async () => {
-  if (!tracker.intrinsics) {
-    status.textContent = 'Start the camera first';
-    return;
-  }
-  fromScreen.disabled = true;
-  try {
-    const f = await calibrateFromPattern(video, tracker.calibrator, () => tracker.intrinsics, {
-      onProgress: ({ views, needed, seen }) => {
-        status.textContent = `${seen ? 'Pattern seen' : 'Looking for the pattern'}; ${views} of ${needed} views. Tilt the phone.`;
-      },
-    });
-    status.textContent = `Focal ${f.toFixed(0)} px from the screen pattern`;
-  } catch (e) {
-    status.textContent = e instanceof Error ? e.message : String(e);
-  } finally {
-    fromScreen.disabled = false;
-  }
+stoppableButton($<HTMLButtonElement>('fromScreen'), 'Point the camera at the green dots on the computer…', async (signal) => {
+  if (!tracker.intrinsics) throw new Error('Tap "Start & connect" first: the camera is not running');
+  const f = await calibrateFromPattern(video, tracker.calibrator, () => tracker.intrinsics, {
+    signal,
+    feedback: { mirrored: mirrorInput.checked },
+    onProgress: ({ views, needed, state }) => say(`${PATTERN_ADVICE[state]} · ${views} of ${needed} views`, 'busy'),
+  });
+  return `Focal ${f.toFixed(0)} px from the screen pattern`;
 });
 $('showPattern').addEventListener('click', () =>
   showCalibrationPattern({ message: 'Hold this up to the computer camera, tilting it · tap to close' }),
@@ -142,15 +135,18 @@ $('showPattern').addEventListener('click', () =>
 
 const paper = $<HTMLButtonElement>('paper');
 paper.addEventListener('click', async () => {
-  if (!tracker.intrinsics) return;
+  if (!tracker.intrinsics) {
+    say('Tap "Start & connect" first: the camera is not running', 'error');
+    return;
+  }
   paper.disabled = true;
-  status.textContent = 'Tap near the 4 corners in order around the edge';
+  say('Tap near the 4 corners in order around the edge', 'busy');
   try {
     const { corners, snapped } = await pickRectangle(video, { mirrored: mirrorInput.checked });
     const f = tracker.calibrator.addRectangleView(corners, $<HTMLSelectElement>('object').value);
-    status.textContent = `Focal ${f.toFixed(0)} px${snapped ? '' : ' (edges not found; used taps)'}. Add more views to average.`;
+    say(`Focal ${f.toFixed(0)} px${snapped ? '' : ' (edges not found; used taps)'}. Add more views to average.`, 'ok');
   } catch (e) {
-    status.textContent = e instanceof Error ? e.message : String(e);
+    say(errorText(e), 'error');
   } finally {
     paper.disabled = false;
   }

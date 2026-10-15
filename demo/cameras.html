@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
+    <div id="status" role="status" aria-live="polite"></div>
     <main>
       <div class="tiles" id="tiles"></div>
       <div class="view" id="scene"></div>
@@ -53,8 +54,6 @@
           Calibration runs are recorded automatically.</p>
         <button id="downloadCalibration" disabled>Download last calibration recording</button>
         <button id="record">Record 10 s</button>
-
-        <div id="status"></div>
         <h2>Tracking</h2>
         <div id="readout">Add a camera to start.</div>
       </aside>

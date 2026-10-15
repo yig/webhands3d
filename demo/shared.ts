@@ -163,3 +163,51 @@ export function fpsCounter() {
 }
 
 export const cm = (m: number) => (m * 100).toFixed(1).padStart(6) + 'cm';
+
+export type StatusKind = 'info' | 'busy' | 'ok' | 'error';
+
+/** Show a message in the page's status banner (#status), colour-coded by kind. */
+export function say(text: string, kind: StatusKind = 'info') {
+  const el = document.getElementById('status');
+  if (!el) return;
+  el.textContent = text;
+  el.dataset.kind = kind;
+}
+
+/** Message for a caught error (cancellations read as such). */
+export function errorText(e: unknown): string {
+  if (e instanceof DOMException && e.name === 'AbortError') return 'Cancelled';
+  return e instanceof Error ? e.message : String(e);
+}
+
+/**
+ * Run a long step from a button that turns into "Stop" while it runs (clicking
+ * it again cancels). Progress, result and errors go to the status banner.
+ */
+export function stoppableButton(
+  button: HTMLButtonElement,
+  hint: string,
+  run: (signal: AbortSignal) => Promise<string>,
+) {
+  const idle = button.textContent ?? '';
+  let controller: AbortController | null = null;
+  button.addEventListener('click', async () => {
+    if (controller) {
+      controller.abort();
+      return;
+    }
+    controller = new AbortController();
+    button.textContent = 'Stop';
+    button.classList.add('running');
+    say(hint, 'busy');
+    try {
+      say(await run(controller.signal), 'ok');
+    } catch (e) {
+      say(errorText(e), 'error');
+    } finally {
+      controller = null;
+      button.textContent = idle;
+      button.classList.remove('running');
+    }
+  });
+}

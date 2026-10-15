@@ -80,6 +80,16 @@ export function showCalibrationPattern(options: ShowPatternOptions = {}): { clos
   return { close };
 }
 
+export type PatternViewState =
+  /** No pattern in view. */
+  | 'not-seen'
+  /** Seen, but too flat to the camera to measure (tilt it 30–60°). */
+  | 'too-flat'
+  /** Seen, but too similar to a view already taken (move or tilt it differently). */
+  | 'same-view'
+  /** Taken as a new view. */
+  | 'accepted';
+
 export interface PatternCalibrationOptions {
   /** Views to collect (default 8). */
   views?: number;
@@ -88,13 +98,26 @@ export interface PatternCalibrationOptions {
   /** How often to look for the pattern, ms. */
   intervalMs?: number;
   signal?: AbortSignal;
-  onProgress?: (p: { views: number; needed: number; seen: boolean; focal: number | null }) => void;
+  onProgress?: (p: { views: number; needed: number; state: PatternViewState; corners: Float64Array | null; focal: number | null }) => void;
+  /**
+   * Draw live feedback over the video (detected dots, view count, what to do
+   * next). Default true; set `mirrored` if the video is shown mirrored.
+   */
+  feedback?: boolean | { mirrored?: boolean };
 }
+
+/** Advice shown for each state. */
+export const PATTERN_ADVICE: Record<PatternViewState, string> = {
+  'not-seen': 'Show the four green dots to the camera',
+  'too-flat': 'Tilt the screen more (30–60°)',
+  'same-view': 'Now tilt it a different way',
+  accepted: 'Got it — tilt it a different way',
+};
 
 /**
  * Calibrate a camera's focal length from the pattern shown on another screen:
  * watches `video`, and each time the pattern is seen tilted enough (and
- * different enough from the previous view) adds a view to `calibrator`
+ * different enough from the previous views) adds a view to `calibrator`
  * (median over views). Resolves with the focal length in pixels.
  * Move and tilt the screen (30–60°, in different directions) while it runs.
  */
@@ -107,38 +130,116 @@ export async function calibrateFromPattern(
   const { views: needed = 8, timeoutMs = 60000, intervalMs = 150, signal, onProgress } = options;
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+  const overlay = options.feedback === false ? null : feedbackOverlay(video, typeof options.feedback === 'object' && !!options.feedback.mirrored);
   calibrator.clearRectangleViews();
   const accepted: Float64Array[] = [];
   let focal: number | null = null;
   const start = performance.now();
-  while (accepted.length < needed) {
-    if (signal?.aborted) throw new DOMException('Pattern calibration cancelled', 'AbortError');
-    if (performance.now() - start > timeoutMs) {
-      if (accepted.length >= 3) break;
-      throw new Error(`Saw the pattern in only ${accepted.length} usable views; tilt the screen more and keep it in view`);
-    }
-    await new Promise((r) => setTimeout(r, intervalMs));
-    const k = intrinsics();
-    if (!k || !video.videoWidth) continue;
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    ctx.drawImage(video, 0, 0);
-    const corners = detectPattern(ctx.getImageData(0, 0, canvas.width, canvas.height));
-    let usable = false;
-    if (corners) {
-      // A new view only if the pattern moved noticeably since the last one.
-      const moved = accepted.every((prev) => {
-        let d = 0;
-        for (let i = 0; i < 8; i++) d = Math.max(d, Math.abs(prev[i] - corners[i]));
-        return d > 0.04 * canvas.width;
-      });
-      if (moved && focalFromRectangle(corners, PATTERN_SQUARE, k.cx, k.cy, k.fx)) {
-        focal = calibrator.addRectangleView(corners, PATTERN_SQUARE);
-        accepted.push(corners);
-        usable = true;
+  try {
+    while (accepted.length < needed) {
+      if (signal?.aborted) throw new DOMException('Pattern calibration cancelled', 'AbortError');
+      if (performance.now() - start > timeoutMs) {
+        if (accepted.length >= 3) break;
+        throw new Error(
+          accepted.length
+            ? `Only ${accepted.length} usable views in ${timeoutMs / 1000} s; tilt the screen more, in different directions`
+            : `Didn't see the pattern in ${timeoutMs / 1000} s; show the four green dots to the camera, larger in view`,
+        );
       }
+      await new Promise((r) => setTimeout(r, intervalMs));
+      const k = intrinsics();
+      if (!k || !video.videoWidth) continue;
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      ctx.drawImage(video, 0, 0);
+      const corners = detectPattern(ctx.getImageData(0, 0, canvas.width, canvas.height));
+      let state: PatternViewState = 'not-seen';
+      if (corners) {
+        // A new view only if the pattern moved noticeably since the previous ones.
+        const moved = accepted.every((prev) => {
+          let d = 0;
+          for (let i = 0; i < 8; i++) d = Math.max(d, Math.abs(prev[i] - corners[i]));
+          return d > 0.04 * canvas.width;
+        });
+        if (!focalFromRectangle(corners, PATTERN_SQUARE, k.cx, k.cy, k.fx)) state = 'too-flat';
+        else if (!moved) state = 'same-view';
+        else {
+          focal = calibrator.addRectangleView(corners, PATTERN_SQUARE);
+          accepted.push(corners);
+          state = 'accepted';
+        }
+      }
+      overlay?.draw(canvas.width, canvas.height, corners, state, accepted.length, needed);
+      onProgress?.({ views: accepted.length, needed, state, corners, focal });
     }
-    onProgress?.({ views: accepted.length, needed, seen: !!corners, focal: usable ? focal : focal });
+  } finally {
+    overlay?.remove();
   }
   return focal!;
+}
+
+/** A canvas over the video showing the detected dots, the view count and advice. */
+function feedbackOverlay(video: HTMLVideoElement, mirrored: boolean) {
+  const canvas = document.createElement('canvas');
+  Object.assign(canvas.style, {
+    position: 'fixed',
+    zIndex: '2147483646',
+    pointerEvents: 'none',
+    objectFit: 'contain',
+    transform: mirrored ? 'scaleX(-1)' : '',
+  });
+  const place = () => {
+    const r = video.getBoundingClientRect();
+    Object.assign(canvas.style, { left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` });
+  };
+  place();
+  document.body.append(canvas);
+  addEventListener('resize', place);
+  addEventListener('scroll', place, true);
+  return {
+    draw(width: number, height: number, corners: Float64Array | null, state: PatternViewState, views: number, needed: number) {
+      place();
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d')!;
+      const unit = Math.max(3, width / 200);
+      if (corners) {
+        ctx.strokeStyle = state === 'accepted' ? '#3cff6e' : '#ffd23f';
+        ctx.lineWidth = unit;
+        ctx.beginPath();
+        for (let i = 0; i < 4; i++) ctx.lineTo(corners[i * 2], corners[i * 2 + 1]);
+        ctx.closePath();
+        ctx.stroke();
+        for (let i = 0; i < 4; i++) {
+          ctx.beginPath();
+          ctx.arc(corners[i * 2], corners[i * 2 + 1], unit * 3, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+      // Count and advice, readable even when the video is mirrored.
+      ctx.save();
+      if (mirrored) {
+        ctx.translate(width, 0);
+        ctx.scale(-1, 1);
+      }
+      ctx.fillStyle = 'rgba(0,0,0,0.6)';
+      ctx.fillRect(0, height - unit * 22, width, unit * 22);
+      ctx.fillStyle = '#fff';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = `bold ${unit * 8}px system-ui, sans-serif`;
+      ctx.fillText(`${views} / ${needed} views`, width / 2, height - unit * 15);
+      ctx.font = `${unit * 5}px system-ui, sans-serif`;
+      ctx.fillText(PATTERN_ADVICE[state], width / 2, height - unit * 6);
+      // Progress bar.
+      ctx.fillStyle = '#3cff6e';
+      ctx.fillRect(0, height - unit * 1.5, (width * views) / needed, unit * 1.5);
+      ctx.restore();
+    },
+    remove() {
+      removeEventListener('resize', place);
+      removeEventListener('scroll', place, true);
+      canvas.remove();
+    },
+  };
 }

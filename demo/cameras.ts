@@ -12,6 +12,7 @@ import {
   openCamera,
   pickRectangle,
   calibrateFromPattern,
+  PATTERN_ADVICE,
   showCalibrationPattern,
   randomId,
   type CameraHandle,
@@ -19,10 +20,9 @@ import {
   type Recording,
   type ViewSource,
 } from '../src';
-import { cm, createHandScene, drawHandOverlay, fpsCounter } from './shared';
+import { cm, createHandScene, drawHandOverlay, errorText, fpsCounter, say, stoppableButton } from './shared';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
-const status = $<HTMLDivElement>('status');
 const readout = $<HTMLDivElement>('readout');
 const tiles = $<HTMLDivElement>('tiles');
 
@@ -109,16 +109,14 @@ function addControls(view: View, bar: HTMLElement) {
     const screen = document.createElement('button');
     screen.textContent = 'Screen';
     screen.title = 'Calibrate from the pattern on a phone screen held up to this camera';
-    screen.addEventListener('click', () =>
-      runStep(screen, `Hold the phone's pattern up to ${view.name}…`, async () => {
-        const f = await calibrateFromPattern(view.video!, cal, () => view.source.intrinsics, {
-          onProgress: ({ views, needed, seen }) => {
-            status.textContent = `${view.name}: ${seen ? 'pattern seen' : 'looking for the pattern'}; ${views} of ${needed} views. Tilt it in different directions.`;
-          },
-        });
-        return `${view.name}: focal ${f.toFixed(0)} px from the screen pattern`;
-      }),
-    );
+    stoppableButton(screen, `Hold the phone's pattern up to ${view.name}…`, async (signal) => {
+      const f = await calibrateFromPattern(view.video!, cal, () => view.source.intrinsics, {
+        signal,
+        feedback: { mirrored: true },
+        onProgress: ({ views, needed, state }) => say(`${view.name}: ${PATTERN_ADVICE[state]} · ${views} of ${needed} views`, 'busy'),
+      });
+      return `${view.name}: focal ${f.toFixed(0)} px from the screen pattern`;
+    });
     bar.append(object, paper, screen);
     cal.onChange(render);
   } else {
@@ -273,13 +271,13 @@ acceptRemotes(signaling, (link) => {
   addView('remote', 'Phone', async () => ({ source: camera }))
     .then((v) => {
       v.tile.querySelector('.label')!.textContent = camera.label || 'Phone';
-      status.textContent = `${camera.label || 'A phone'} joined`;
+      say(`${camera.label || 'A phone'} joined`, 'ok');
     })
-    .catch((e) => (status.textContent = String(e)));
+    .catch((e) => say(errorText(e), 'error'));
   camera.onClose(() => {
     const v = views.find((x) => x.source === camera);
     if (v) removeView(v);
-    status.textContent = `${camera.label || 'A phone'} left`;
+    say(`${camera.label || 'A phone'} left`);
   });
 });
 
@@ -304,11 +302,11 @@ acceptRemotes(signaling, (link) => {
 // ---------- calibration ----------
 async function runStep(button: HTMLButtonElement, hint: string, step: () => Promise<string>) {
   button.disabled = true;
-  status.textContent = hint;
+  say(hint, 'busy');
   try {
-    status.textContent = await step();
+    say(await step(), 'ok');
   } catch (e) {
-    status.textContent = e instanceof Error ? e.message : String(e);
+    say(errorText(e), 'error');
   } finally {
     button.disabled = false;
   }
@@ -339,9 +337,11 @@ calibrate.addEventListener('click', () =>
     try {
       result = await tracker.calibrate({
         onProgress: ({ elapsedMs, durationMs, frames }) => {
-          status.textContent =
+          say(
             `Move one hand through the shared view… ${Math.ceil((durationMs - elapsedMs) / 1000)} s ` +
-            `(hand frames per camera: ${frames.join(' / ')})`;
+            `(hand frames per camera: ${frames.join(' / ')})`,
+            'busy',
+            );
         },
       });
     } catch (e) {
@@ -389,5 +389,5 @@ $('showPattern').addEventListener('click', () =>
 $('reset').addEventListener('click', () => {
   tracker.resetCalibration();
   render();
-  status.textContent = 'Camera positions reset';
+  say('Camera positions reset', 'ok');
 });

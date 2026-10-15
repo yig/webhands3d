@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
+    <div id="status" role="status" aria-live="polite"></div>
     <main>
       <div class="view"><div id="videoWrap" class="videoWrap"><video id="video" muted playsinline></video><canvas id="overlay"></canvas></div></div>
       <div class="view" id="scene"></div>
@@ -16,7 +17,6 @@
         <h1>webhands</h1>
         <p class="hint">Monocular 3D hands: MediaPipe + perspective-n-point.</p>
         <button id="start" class="primary">Start camera</button>
-        <div id="status"></div>
 
         <h2>Camera</h2>
         <label>Device <select id="camera"></select></label>

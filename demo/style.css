@@ -81,8 +81,22 @@ button {
 }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 button:disabled { opacity: 0.5; cursor: default; }
+button.running { background: #b3261e; border-color: #b3261e; color: #fff; }
 #readout { font: 12px/1.5 ui-monospace, monospace; white-space: pre; }
-#status { color: var(--muted); font-size: 12px; min-height: 1.4em; }
+/* Status banner: fixed at the top of the screen, colour-coded by data-kind. */
+#status {
+  position: fixed; top: 10px; left: 50%; transform: translateX(-50%); z-index: 1000;
+  max-width: min(92vw, 720px); padding: 10px 16px; border-radius: 10px;
+  font-size: 15px; line-height: 1.35; text-align: center;
+  background: #24324a; color: #fff; box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+}
+#status:empty { display: none; }
+#status[data-kind='busy'] { background: #1f5fbf; }
+#status[data-kind='ok'] { background: #22803f; }
+#status[data-kind='error'] { background: #b3261e; }
+#status[data-kind='busy']::before { content: '⏳ '; }
+#status[data-kind='ok']::before { content: '✓ '; }
+#status[data-kind='error']::before { content: '⚠ '; }
 .legend span { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; }
 .stack { display: grid; grid-template-rows: 1fr 1fr; gap: 12px; min-height: 0; }
 .stack .view { min-height: 0; }

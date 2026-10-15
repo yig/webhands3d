@@ -135,6 +135,8 @@ export { PATTERN_LAYOUT, PATTERN_SQUARE, detectPattern, type PatternDetectionOpt
 export {
   calibrateFromPattern,
   showCalibrationPattern,
+  PATTERN_ADVICE,
   type PatternCalibrationOptions,
+  type PatternViewState,
   type ShowPatternOptions,
 } from './ui/pattern';

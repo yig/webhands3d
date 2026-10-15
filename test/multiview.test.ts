@@ -106,10 +106,14 @@ function events(durationMs: number, options: EventOptions | ((view: number, t: n
   return out.sort((a, b) => a.at - b.at);
 }
 
+/** Simulated arrival clock (camera 0's), so arrival-delay estimates don't depend on how fast the test machine is. */
+let simClock = 0;
+
 function setup(options: ConstructorParameters<typeof MultiViewHandTracker>[1] = {}) {
   const sources = CAMS.map((c, i) => new FakeSource(c.k, `cam${i}`));
   sources[0].skeletons.Right = { lengths: TRUE_LENGTHS, palm: new Float64Array(15) };
-  const tracker = new MultiViewHandTracker(sources, { smoothing: false, ...options });
+  simClock = 0;
+  const tracker = new MultiViewHandTracker(sources, { smoothing: false, now: () => simClock, ...options });
   return { sources, tracker };
 }
 
@@ -123,7 +127,10 @@ describe('MultiViewHandTracker', () => {
     await tracker.start();
     const r = rng(1);
     const step = tracker.calibrate({ durationMs: 10, random: () => (r() + 1) / 2 });
-    for (const e of events(10000)) sources[e.view].emit(e.hands, e.reported);
+    for (const e of events(10000)) {
+      simClock = e.at;
+      sources[e.view].emit(e.hands, e.reported);
+    }
     const result = await step;
     for (const i of [1, 2]) {
       const cal = result.views[i];
@@ -144,7 +151,10 @@ describe('MultiViewHandTracker', () => {
     await tracker.start();
     const out: Hand3D[] = [];
     tracker.onFrame((hands) => out.push(...hands));
-    for (const e of events(3000, (view, t) => view === 0 && t > 1500)) sources[e.view].emit(e.hands, e.reported);
+    for (const e of events(3000, (view, t) => view === 0 && t > 1500)) {
+      simClock = e.at;
+      sources[e.view].emit(e.hands, e.reported);
+    }
     const late = out.filter((h) => h.timestamp > 1600);
     expect(late.length).toBeGreaterThan(30);
     expect(late.every((h) => h.debug?.source === 'stereo' && h.debug.views?.join() === '1,2')).toBe(true);
@@ -268,7 +278,10 @@ describe('MultiViewHandTracker', () => {
     const { sources, tracker } = setup({ calibrations: [null, trueCalibration(1), trueCalibration(2)], refineIntervalMs: 0 });
     sources[1].skeletons = {};
     await tracker.start();
-    for (const e of events(4000)) sources[e.view].emit(e.hands, e.reported);
+    for (const e of events(4000)) {
+      simClock = e.at;
+      sources[e.view].emit(e.hands, e.reported);
+    }
     expect(tracker.status.skeletonSamples.Right).toBeGreaterThan(60);
     const lengths = sources[1].skeletons.Right!.lengths;
     const err = Array.from(lengths, (l, b) => Math.abs(l / TRUE_LENGTHS[b] - 1));
@@ -282,7 +295,10 @@ describe('calibration with a second hand in view', () => {
     await tracker.start();
     const r = rng(3);
     const step = tracker.calibrate({ durationMs: 10, random: () => (r() + 1) / 2 });
-    for (const e of events(10000, opts)) sources[e.view].emit(e.hands, e.reported);
+    for (const e of events(10000, opts)) {
+      simClock = e.at;
+      sources[e.view].emit(e.hands, e.reported);
+    }
     return step;
   }
   const halfTheTime = (_v: number, t: number, side: 'Left' | 'Right') => side === 'Left' && t % 2000 < 1000;

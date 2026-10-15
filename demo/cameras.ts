@@ -2,25 +2,20 @@ import QRCode from 'qrcode';
 import {
   MonocularHandTracker,
   MultiViewHandTracker,
-  Recorder,
   RemoteCamera,
   acceptRemotes,
-  downloadRecording,
+  createCalibrationPanel,
   fromCamera0,
   httpSignaling,
   watchCameras,
   openCamera,
-  pickRectangle,
-  calibrateFromPattern,
-  PATTERN_ADVICE,
-  showCalibrationPattern,
   randomId,
   type CameraHandle,
   type Hand3D,
-  type Recording,
+  type StatusKind,
   type ViewSource,
 } from '../src';
-import { cm, createHandScene, drawHandOverlay, errorText, fpsCounter, say, stoppableButton } from './shared';
+import { cm, createHandScene, drawHandOverlay, errorText, fpsCounter } from './shared';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const readout = $<HTMLDivElement>('readout');
@@ -34,7 +29,6 @@ interface View {
   tile: HTMLDivElement;
   overlay: HTMLCanvasElement;
   info: HTMLSpanElement;
-  fov?: HTMLInputElement;
   video?: HTMLVideoElement;
   camera?: CameraHandle;
   /** This camera's latest own detections, for its overlay. */
@@ -47,6 +41,14 @@ const views: View[] = [];
 const tracker = new MultiViewHandTracker([]);
 tracker.start();
 const scene3d = createHandScene($<HTMLDivElement>('scene'));
+
+// All calibration UI comes from the library's panel; the page only shows the cameras.
+const panel = createCalibrationPanel($('calibration'), {
+  tracker,
+  videoFor: (source) => views.find((v) => v.source === source)?.video ?? null,
+  nameFor: (source, i) => `${i}: ${views.find((v) => v.source === source)?.name ?? 'camera'}`,
+});
+const say = (text: string, kind: StatusKind = 'info') => panel.say(text, kind);
 
 // ---------- tiles ----------
 function makeTile(name: string, kind: View['kind']) {
@@ -79,50 +81,6 @@ function makeTile(name: string, kind: View['kind']) {
 }
 
 function addControls(view: View, bar: HTMLElement) {
-  const fov = document.createElement('input');
-  fov.type = 'number';
-  fov.step = '0.5';
-  fov.title = 'Horizontal field of view, degrees';
-  const fovLabel = document.createElement('span');
-  fovLabel.textContent = 'FOV';
-  bar.append(fovLabel, fov);
-  view.fov = fov;
-  if (view.kind === 'local') {
-    const cal = (view.source as MonocularHandTracker).calibrator;
-    fov.addEventListener('change', () => {
-      const v = parseFloat(fov.value);
-      if (v > 0) cal.setFieldOfView(v);
-    });
-    const object = document.createElement('select');
-    object.title = 'Object to click: hold it flat, tilted 30–60°, as large as possible in view';
-    object.append(new Option('A4', 'a4'), new Option('Letter', 'letter'), new Option('Card', 'card'));
-    const paper = document.createElement('button');
-    paper.textContent = 'Corners';
-    paper.title = 'Click near the 4 corners of the object (they snap to its edges)';
-    paper.addEventListener('click', () =>
-      runStep(paper, `Click near the 4 corners in ${view.name}; they snap to the edges (Esc cancels)`, async () => {
-        const { corners, snapped } = await pickRectangle(view.video!, { mirrored: true });
-        const f = cal.addRectangleView(corners, object.value);
-        return `${view.name}: focal ${f.toFixed(0)} px${snapped ? '' : ' (edges not found; used clicks)'}. Add more views to average.`;
-      }),
-    );
-    const screen = document.createElement('button');
-    screen.textContent = 'Screen';
-    screen.title = 'Calibrate from the pattern on a phone screen held up to this camera';
-    stoppableButton(screen, `Hold the phone's pattern up to ${view.name}…`, async (signal) => {
-      const f = await calibrateFromPattern(view.video!, cal, () => view.source.intrinsics, {
-        signal,
-        feedback: { mirrored: true },
-        onProgress: ({ views, needed, state }) => say(`${view.name}: ${PATTERN_ADVICE[state]} · ${views} of ${needed} views`, 'busy'),
-      });
-      return `${view.name}: focal ${f.toFixed(0)} px from the screen pattern`;
-    });
-    bar.append(object, paper, screen);
-    cal.onChange(render);
-  } else {
-    fov.disabled = true;
-    fov.title = "Set on the phone's own page";
-  }
   const remove = document.createElement('button');
   remove.textContent = '✕';
   remove.title = 'Remove this camera';
@@ -154,6 +112,7 @@ async function addView(
   });
   await tracker.addSource(view.source);
   render();
+  panel.refresh();
   return view;
 }
 
@@ -169,21 +128,20 @@ function removeView(view: View) {
   view.camera?.stop();
   if (view.source instanceof RemoteCamera) view.source.close();
   view.tile.remove();
-  if (view.kind === 'local') populateCameras().catch(() => {});
+  if (view.kind === 'local') renderCameraList();
   render();
+  panel.refresh();
 }
 
-/** Refresh tile info, FOV fields and 3D camera frustums. */
+/** Refresh tile info and 3D camera frustums. */
 function render() {
   const st = tracker.status;
   views.forEach((v, i) => {
-    const k = v.source.intrinsics;
     const vs = st.views[i];
     const where = i === 0 ? 'reference' : vs?.calibration
       ? `${(vs.baseline! * 100).toFixed(0)} cm away, offset ${vs.calibration.timeOffsetMs} ms`
       : 'not calibrated';
     v.info.textContent = `${i}: ${where} · ${v.rate.toFixed(0)} fps`;
-    if (k && v.fov && document.activeElement !== v.fov) v.fov.value = ((360 / Math.PI) * Math.atan(k.width / 2 / k.fx)).toFixed(1);
   });
   scene3d.setCameras(
     views.flatMap((v, i) => {
@@ -237,9 +195,6 @@ function renderCameraList() {
     ...knownCameras.filter((c) => !used.has(c.deviceId)).map((c, j) => new Option(c.label || `Camera ${j + 1}`, c.deviceId)),
   );
 }
-async function populateCameras() {
-  renderCameraList();
-}
 // Ask for camera access up front, so the list shows every camera by name.
 watchCameras((cameras) => {
   knownCameras = cameras;
@@ -254,8 +209,12 @@ addLocal.addEventListener('click', () =>
       const camera = await openCamera({ video: video!, deviceId: localSelect.value || undefined });
       return { source: new MonocularHandTracker({ video }), camera };
     });
-    if (view.camera?.label) view.tile.querySelector('.label')!.textContent = view.camera.label;
-    await populateCameras();
+    if (view.camera?.label) {
+      view.name = view.camera.label;
+      view.tile.querySelector('.label')!.textContent = view.camera.label;
+    }
+    renderCameraList();
+    panel.refresh();
     return `Added ${view.camera?.label ?? name}`;
   }),
 );
@@ -277,7 +236,9 @@ acceptRemotes(signaling, (link) => {
   const camera = new RemoteCamera(link);
   addView('remote', 'Phone', async () => ({ source: camera }))
     .then((v) => {
-      v.tile.querySelector('.label')!.textContent = camera.label || 'Phone';
+      v.name = camera.label || 'Phone';
+      v.tile.querySelector('.label')!.textContent = v.name;
+      panel.refresh();
       say(`${camera.label || 'A phone'} joined`, 'ok');
     })
     .catch((e) => say(errorText(e), 'error'));
@@ -306,7 +267,7 @@ acceptRemotes(signaling, (link) => {
   }
 })();
 
-// ---------- calibration ----------
+// ---------- page actions ----------
 async function runStep(button: HTMLButtonElement, hint: string, step: () => Promise<string>) {
   button.disabled = true;
   say(hint, 'busy');
@@ -318,83 +279,3 @@ async function runStep(button: HTMLButtonElement, hint: string, step: () => Prom
     button.disabled = false;
   }
 }
-
-const handSize = $<HTMLButtonElement>('handSize');
-handSize.addEventListener('click', () =>
-  runStep(handSize, 'Hold still…', async () => {
-    const first = views[0]?.source;
-    if (!first?.calibrator) throw new Error('Add a camera first');
-    return `Hand scale ${(await first.calibrator.handSizeFromObject('card-long')).toFixed(3)}`;
-  }),
-);
-
-// Every calibration run is recorded, for debugging.
-let lastCalibration: Recording | null = null;
-const downloadCalibration = $<HTMLButtonElement>('downloadCalibration');
-downloadCalibration.addEventListener('click', () => lastCalibration && downloadRecording(lastCalibration));
-
-const calibrate = $<HTMLButtonElement>('calibrate');
-calibrate.addEventListener('click', () =>
-  runStep(calibrate, 'Move one hand through the shared view…', async () => {
-    if (views.length < 2) throw new Error('Add at least two cameras');
-    const recorder = new Recorder(tracker);
-    recorder.start();
-    let result: Awaited<ReturnType<typeof tracker.calibrate>> | undefined;
-    let error: unknown;
-    try {
-      result = await tracker.calibrate({
-        onProgress: ({ elapsedMs, durationMs, frames }) => {
-          say(
-            `Move one hand through the shared view… ${Math.ceil((durationMs - elapsedMs) / 1000)} s ` +
-            `(hand frames per camera: ${frames.join(' / ')})`,
-            'busy',
-            );
-        },
-      });
-    } catch (e) {
-      error = e;
-      throw e;
-    } finally {
-      lastCalibration = recorder.stop('calibrate', result ? { views: result.views } : { error });
-      downloadCalibration.disabled = false;
-    }
-    render();
-    const lines = result.views.flatMap((r, i) =>
-      i === 0
-        ? []
-        : [
-            `camera ${i}: ${
-              r instanceof Error
-                ? r.message
-                : r
-                  ? `${(Math.hypot(...r.t) * 100).toFixed(1)} cm, ${r.rmsPx.toFixed(1)} px, ${(r.inlierRatio * 100).toFixed(0)} % consistent` +
-                    (r.warning ? `. ${r.warning}` : '')
-                  : 'skipped'
-            }`,
-          ],
-    );
-    const sides = Object.keys(result.skeletons);
-    return `${lines.join('; ')}${sides.length ? `; skeleton measured (${sides.join(', ')})` : ''}`;
-  }),
-);
-
-const record = $<HTMLButtonElement>('record');
-record.addEventListener('click', () =>
-  runStep(record, 'Recording 10 s…', async () => {
-    const recorder = new Recorder(tracker);
-    recorder.start();
-    await new Promise((r) => setTimeout(r, 10000));
-    downloadRecording(recorder.stop('tracking'));
-    return 'Recording downloaded';
-  }),
-);
-
-$('showPattern').addEventListener('click', () =>
-  showCalibrationPattern({ message: 'Point the phone camera here · click to close' }),
-);
-
-$('reset').addEventListener('click', () => {
-  tracker.resetCalibration();
-  render();
-  say('Camera positions reset', 'ok');
-});

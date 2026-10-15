@@ -87,6 +87,17 @@ export class MonocularHandTracker implements HandTrackerBackend {
   }
 
   /** Calibration steps for this tracker; results are applied and saved per camera. */
+  /** The video being tracked (the one passed in, or the camera's), once started. */
+  get videoElement(): HTMLVideoElement | null {
+    return this.video ?? this.options.video ?? null;
+  }
+
+  /** The camera's name, if known (from its video track). */
+  get label(): string {
+    const track = (this.videoElement?.srcObject as MediaStream | null)?.getVideoTracks()[0];
+    return this.camera?.label || track?.label || '';
+  }
+
   get calibrator(): Calibrator {
     return (this.calibratorInstance ??= new Calibrator(this));
   }

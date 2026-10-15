@@ -27,6 +27,8 @@ export interface ViewSource extends CalibratableTracker {
   stop(): void;
   /** If present, measured values (hand size, skeleton) are saved through it. */
   readonly calibrator?: Calibrator;
+  /** For cameras calibrated elsewhere (a phone, on its own page): whether their focal length was calibrated. */
+  readonly focalCalibrated?: boolean;
 }
 
 export interface MultiViewOptions {

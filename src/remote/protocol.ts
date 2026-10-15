@@ -18,7 +18,8 @@ export interface WireHand {
 
 export type RemoteToHost =
   | { type: 'hello'; version: number; cameraId: string; label: string }
-  | { type: 'intrinsics'; k: Intrinsics }
+  /** `calibrated`: whether the remote calibrated its focal length (vs. a default). */
+  | { type: 'intrinsics'; k: Intrinsics; calibrated?: boolean }
   /** `t` is the frame's capture time on the remote clock. */
   | { type: 'frame'; t: number; hands: WireHand[] }
   | { type: 'pong'; t0: number; t1: number };

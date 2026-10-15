@@ -50,43 +50,40 @@ await host.click('.view:nth-child(2) .tile-bar button[title="Remove this camera"
 await host.waitForTimeout(1000);
 check((await options(host)).length === before + 1, 'removed local camera is offered again');
 
-// Screen calibration on a camera tile: the button turns into Stop, feedback appears, Stop cancels.
-await host.click('.view:nth-child(1) .tile-bar button:has-text("Screen")');
+// The library calibration panel: screen calibration turns into Stop, shows feedback, Stop cancels.
+check((await host.locator('button:has-text("Screen pattern")').count()) === 1, 'calibration panel lists the camera with its lens options');
+await host.locator('button:has-text("Screen pattern")').first().click();
 await host.waitForTimeout(800);
-const running = await host.textContent('.view:nth-child(1) .tile-bar button.running');
-const banner = await host.getAttribute('#status', 'data-kind');
+const running = await host.locator('button.running').first().textContent();
+const banner = await host.locator('.banner').getAttribute('data-kind');
 const overlays = await host.$$eval('canvas', (cs) => cs.filter((c) => c.style.pointerEvents === 'none').length);
-await host.click('.view:nth-child(1) .tile-bar button.running');
+await host.locator('button.running').first().click();
 await host.waitForTimeout(500);
 check(
-  running === 'Stop' && banner === 'busy' && overlays === 1 && /Cancelled/.test(await text(host, '#status')),
+  running === 'Stop' && banner === 'busy' && overlays === 1 && /Cancelled/.test(await host.locator('.banner').textContent()),
   'screen calibration shows Stop, a busy banner and on-video feedback; Stop cancels',
 );
 
 const room = new URL(await text(host, '#joinUrl')).searchParams.get('room');
 const phone = await page(`/remote.html?room=${room}`, 'remote');
 await phone.waitForTimeout(500);
-// Before the camera runs, "Calibrate from screen" explains why instead of doing nothing.
-await phone.click('#fromScreen');
-await phone.waitForTimeout(300);
-check(
-  (await phone.getAttribute('#status', 'data-kind')) === 'error' && /camera is not running/.test(await text(phone, '#status')),
-  'phone: calibrating before the camera runs says why',
-);
+// Before the camera runs, the phone's calibration panel says what to do first.
+check((await phone.locator('text=Start this camera first').count()) === 1, 'phone: calibration panel says to start the camera first');
 const cams = await phone.$$eval('#camera option', (os) => os.map((o) => o.value));
 await phone.selectOption('#camera', cams.at(-1));
 await phone.click('#start');
 // Loading MediaPipe and connecting can take a while on a busy machine.
-await phone.waitForFunction(() => /Connected to the computer/.test(document.querySelector('#status')?.textContent ?? ''), null, { timeout: 30000 }).catch(() => {});
+await phone.locator('.banner:has-text("Connected to the computer")').waitFor({ timeout: 30000 }).catch(() => {});
 await host.waitForFunction(() => document.querySelectorAll('.view .label').length === 2, null, { timeout: 10000 }).catch(() => {});
-check(/Connected/.test(await text(phone, '#status')), 'phone page connects over WebRTC');
+check(/Connected/.test(await phone.locator('.banner').textContent()), 'phone page connects over WebRTC');
 check((await tiles(host)).length === 2, 'phone appears as a camera on the host');
 
 // A calibration run (no hands: fails) is recorded and can be downloaded.
-await host.click('#calibrate');
-await host.waitForTimeout(13000);
+await host.locator('button:has-text("Calibrate cameras")').click();
+await host.waitForTimeout(13500);
+await host.locator('summary:has-text("Debugging")').click();
 const download = host.waitForEvent('download');
-await host.click('#downloadCalibration');
+await host.locator('button:has-text("Download last calibration recording")').click();
 const file = await download;
 const recording = JSON.parse(await (await import('node:fs/promises')).readFile(await file.path(), 'utf8'));
 check(recording.format === 'webhands-recording' && recording.views.length === 2 && recording.views[1].frames.length > 50,

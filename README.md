@@ -55,7 +55,19 @@ await tracker.start();
 
 ### Calibration
 
-Calibration is part of the library. Each step collects frames, applies the
+The quickest way: a ready-made, guided calibration UI for any tracker (it is
+what the demos use):
+
+```ts
+import { createCalibrationPanel } from 'webhands';
+
+createCalibrationPanel(document.querySelector('#calibration'), { tracker });
+```
+
+It shows each step's status, live feedback over the video, and a status banner;
+it renders in a shadow root and can be themed with `--wh-*` CSS variables.
+
+Or drive the steps yourself. Calibration is part of the library. Each step collects frames, applies the
 result to the tracker and saves it per camera; steps reject with a
 `CalibrationError` whose `code` explains what to fix.
 

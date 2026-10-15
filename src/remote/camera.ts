@@ -40,6 +40,8 @@ export class RemoteCamera implements ViewSource {
   cameraId = '';
   label = '';
   readonly clock = new ClockSync();
+  /** Whether the remote calibrated its own focal length (it does that on its own page). */
+  focalCalibrated = false;
   /** Frames received / emitted, for diagnostics. */
   framesReceived = 0;
 
@@ -158,6 +160,7 @@ export class RemoteCamera implements ViewSource {
       }
       case 'intrinsics':
         this.intrinsics = message.k;
+        this.focalCalibrated = !!message.calibrated;
         if (this.cameraId) this.resolveReady();
         break;
       case 'pong':
@@ -259,10 +262,11 @@ export class RemoteCameraSender {
   private sendIntrinsicsIfChanged() {
     const k = this.source.intrinsics;
     if (!k) return;
-    const key = JSON.stringify(k);
+    const calibrated = !!this.source.calibrator?.status.focal.calibrated;
+    const key = JSON.stringify([k, calibrated]);
     if (key === this.lastIntrinsics) return;
     this.lastIntrinsics = key;
-    this.post({ type: 'intrinsics', k });
+    this.post({ type: 'intrinsics', k, calibrated });
   }
 
   private handle(message: HostToRemote) {

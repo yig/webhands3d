@@ -2,26 +2,22 @@ import {
   MonocularHandTracker,
   RemoteCameraSender,
   connectToHost,
-  fovFromIntrinsics,
   httpSignaling,
   watchCameras,
   openCamera,
-  pickRectangle,
-  calibrateFromPattern,
-  PATTERN_ADVICE,
-  showCalibrationPattern,
   randomId,
+  createCalibrationPanel,
   type CameraHandle,
+  type StatusKind,
   type Link,
 } from '../src';
-import { drawHandOverlay, errorText, fpsCounter, say, stoppableButton } from './shared';
+import { drawHandOverlay, errorText, fpsCounter } from './shared';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const video = $<HTMLVideoElement>('video');
 const overlay = $<HTMLCanvasElement>('overlay');
 const cameraSelect = $<HTMLSelectElement>('camera');
 const roomInput = $<HTMLInputElement>('room');
-const fovInput = $<HTMLInputElement>('fov');
 const mirrorInput = $<HTMLInputElement>('mirror');
 
 roomInput.value = new URLSearchParams(location.search).get('room') ?? '';
@@ -53,9 +49,14 @@ tracker.onFrame((hands) => {
     ? `Connected · ${rate.toFixed(0)} fps · ${hands.length} hand(s) · ${sender?.framesSent ?? 0} frames sent`
     : `Not connected · camera ${rate.toFixed(0)} fps`;
 });
-tracker.calibrator.onChange((s) => {
-  if (s.focal.hfovDegrees !== null && document.activeElement !== fovInput) fovInput.value = s.focal.hfovDegrees.toFixed(1);
+// The library's calibration panel: lens step for this camera, plus "Show pattern" for the computer's camera.
+const panel = createCalibrationPanel($('calibration'), {
+  tracker,
+  steps: ['lens'],
+  nameFor: () => 'This camera',
+  mirrored: () => mirrorInput.checked,
 });
+const say = (text: string, kind: StatusKind = 'info') => panel.say(text, kind);
 
 let knownCameras: MediaDeviceInfo[] = [];
 async function populateCameras() {
@@ -86,8 +87,8 @@ async function start() {
   $('videoWrap').classList.toggle('mirror', mirrorInput.checked);
   say('Loading MediaPipe…', 'busy');
   await tracker.start();
-  fovInput.value = fovFromIntrinsics(tracker.intrinsics!).toFixed(1);
   await populateCameras();
+  panel.refresh();
 
   say('Connecting to the computer…', 'busy');
   link = await connectToHost(httpSignaling(location.origin, room));
@@ -119,40 +120,4 @@ startButton.addEventListener('click', async () => {
   }
 });
 
-fovInput.addEventListener('change', () => {
-  const fov = parseFloat(fovInput.value);
-  if (fov > 0 && tracker.intrinsics) tracker.calibrator.setFieldOfView(fov);
-});
 mirrorInput.addEventListener('change', () => $('videoWrap').classList.toggle('mirror', mirrorInput.checked));
-
-stoppableButton($<HTMLButtonElement>('fromScreen'), 'Point the camera at the green dots on the computer…', async (signal) => {
-  if (!tracker.intrinsics) throw new Error('Tap "Start & connect" first: the camera is not running');
-  const f = await calibrateFromPattern(video, tracker.calibrator, () => tracker.intrinsics, {
-    signal,
-    feedback: { mirrored: mirrorInput.checked },
-    onProgress: ({ views, needed, state }) => say(`${PATTERN_ADVICE[state]} · ${views} of ${needed} views`, 'busy'),
-  });
-  return `Focal ${f.toFixed(0)} px from the screen pattern`;
-});
-$('showPattern').addEventListener('click', () =>
-  showCalibrationPattern({ message: 'Hold this up to the computer camera, tilting it · tap to close' }),
-);
-
-const paper = $<HTMLButtonElement>('paper');
-paper.addEventListener('click', async () => {
-  if (!tracker.intrinsics) {
-    say('Tap "Start & connect" first: the camera is not running', 'error');
-    return;
-  }
-  paper.disabled = true;
-  say('Tap near the 4 corners in order around the edge', 'busy');
-  try {
-    const { corners, snapped } = await pickRectangle(video, { mirrored: mirrorInput.checked });
-    const f = tracker.calibrator.addRectangleView(corners, $<HTMLSelectElement>('object').value);
-    say(`Focal ${f.toFixed(0)} px${snapped ? '' : ' (edges not found; used taps)'}. Add more views to average.`, 'ok');
-  } catch (e) {
-    say(errorText(e), 'error');
-  } finally {
-    paper.disabled = false;
-  }
-});

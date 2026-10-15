@@ -141,3 +141,10 @@ export {
   type ShowPatternOptions,
 } from './ui/pattern';
 export { WebXRHandTracker, WEBXR_JOINTS, handsFromFrame, type WebXROptions } from './backends/webxr';
+export {
+  createCalibrationPanel,
+  type CalibrationPanel,
+  type CalibrationPanelOptions,
+  type CalibrationPanelStep,
+  type StatusKind,
+} from './ui/panel';

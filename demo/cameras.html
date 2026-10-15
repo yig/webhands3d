@@ -8,7 +8,6 @@
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
-    <div id="status" role="status" aria-live="polite"></div>
     <main>
       <div class="tiles" id="tiles"></div>
       <div class="view" id="scene"></div>
@@ -28,32 +27,10 @@
         <canvas id="qr"></canvas>
         <div class="url" id="joinUrl"></div>
 
-        <h2>1 · Each camera's field of view</h2>
-        <p class="hint">Edit the FOV on each camera tile, or pick an object there (A4, Letter or a credit card),
-          hold it tilted 30–60°, click "Corners" and click near its 4 corners — they snap to its edges.
-          Keep paper flat on a book or clipboard (a 2 cm bow costs ~3–6 %); a card is rigid.</p>
-        <p class="hint"><b>Easiest and most accurate: screens.</b> For this computer's camera, tap "Show pattern" on
-          the phone, click "Screen" on the camera's tile, and hold the phone's screen up to the camera, tilting it.
-          For a phone's camera, click below, then tap "Calibrate from screen" on the phone and point it at this screen.
-          You can move the cameras afterwards; this only measures their lenses.</p>
-        <button id="showPattern">Show pattern on this screen</button>
+        <h2>Calibration</h2>
+        <!-- The library's drop-in calibration panel (createCalibrationPanel). -->
+        <div id="calibration"></div>
 
-        <h2>2 · Hand size (scale)</h2>
-        <p class="hint">Hold a credit card by its long edge between thumb tip and index fingertip, facing the first camera.</p>
-        <button id="handSize">Calibrate hand size</button>
-
-        <h2>3 · Camera positions</h2>
-        <p class="hint">Hold up one open hand where the cameras see it (best keep the other hand out of view).
-          Move it slowly through the whole shared space for 12 s: near and far, side to side, turning it.
-          Also measures your hand's bone lengths.</p>
-        <button id="calibrate" class="primary">Calibrate cameras (12 s)</button>
-        <p class="hint"><button id="reset">Reset camera positions</button></p>
-
-        <h2>Debugging</h2>
-        <p class="hint">Recordings contain each camera's hand landmarks, timing and calibration (no images).
-          Calibration runs are recorded automatically.</p>
-        <button id="downloadCalibration" disabled>Download last calibration recording</button>
-        <button id="record">Record 10 s</button>
         <h2>Tracking</h2>
         <div id="readout">Add a camera to start.</div>
       </aside>

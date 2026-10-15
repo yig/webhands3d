@@ -41,6 +41,7 @@ src/
   calibration/calibrator.ts Calibrator: runs steps against a tracker, applies + saves results (headless)
   ui/pickCorners.ts        freeze-frame overlay: pickRectangle (click, snap to edges, confirm), pickCorners
   ui/pattern.ts            showCalibrationPattern (display) and calibrateFromPattern (auto-collect views)
+  ui/panel.ts              createCalibrationPanel: drop-in guided calibration UI for any tracker
   backends/monocular.ts    MonocularHandTracker (MediaPipe + solvePose + smoothing)
   backends/assemble.ts     detections → Hand3D (placement + smoothing), shared by local and remote cameras
   backends/multiview.ts    MultiViewHandTracker: N ViewSources, triangulation, skeleton measurement
@@ -58,7 +59,7 @@ src/
   remote/webrtc.ts         connectToHost / acceptRemotes: WebRTC setup over Signaling, non-trickle ICE
   debug/recorder.ts        Recorder: per-camera landmarks, timing and calibration as JSON (replay offline)
 tools/signaling.ts         Vite plugin serving the signaling mailbox (+ LAN address discovery)
-demo/                      Vite dev pages: xr.html (WebXR hands, three.js), index.html (one camera), cameras.html (any number of
+demo/                      Vite dev pages (all calibration UI is the library panel): xr.html (WebXR hands, three.js), index.html (one camera), cameras.html (any number of
                            local + phone cameras, QR join), remote.html (phone side);
                            shared.ts (three.js scene, 2D overlay), style.css
                            (calibration uses only the public Calibrator / pickCorners API)
@@ -120,6 +121,29 @@ cal.onChange(render); cal.reset();
 - `pickCorners(video, { mirrored })` is the only DOM piece: it overlays the
   frozen frame on the video (assumes `object-fit: contain`), collects clicks,
   and returns image pixels, undoing letterboxing and mirroring. Esc cancels.
+
+**Drop-in UI: `createCalibrationPanel(container, { tracker })`.** Everything a
+user needs to see during calibration is part of the library, not the demos:
+the demo pages use only this panel. It works with a `MonocularHandTracker` or a
+`MultiViewHandTracker` (listing its cameras as they come and go) and shows
+guided steps with done/needed marks — camera lens per camera (screen pattern
+with on-video feedback, clicked card/paper with edge snapping, or a typed
+FOV; cameras calibrated elsewhere, like a phone, say so), hand size (gripped
+object or hand length), bone lengths (one camera) or camera positions (several
+cameras: per-camera distance, consistency and warnings; automatic debug
+recordings), reset — and a fixed, colour-coded status banner for progress,
+results and errors (`say()`, `onStatus` to mirror it in your own UI). Long
+steps are cancellable (their button becomes Stop). It renders into a shadow
+root (no CSS clashes) and is themeable with `--wh-*` custom properties.
+Options: `steps`, `videoFor`, `nameFor`, `mirrored` (per camera), `recordings`,
+`banner`, `showPatternButton`. Phones learn whether their own lens was
+calibrated through the remote protocol (`intrinsics.calibrated`), so the
+computer's panel reflects it.
+
+**Camera permission**: `listCameras({ requestPermission: true })` /
+`watchCameras` ask for camera access first if needed (browsers hide camera
+names and may list one placeholder until then) and follow plug/unplug; the
+demos ask on page load.
 
 ## Conventions
 
@@ -295,9 +319,8 @@ pixels square, so the disk centres are an exact square on any device — the
 detecting camera needs no information about the displaying screen. Simulated
 6 cm square on a phone at 30–40 cm, with a lamp and green-ish clutter in view:
 0.2–0.7 % focal error per view; Chrome end-to-end on a moving canvas-stream
-pattern: 1023 px vs true 1024. In the demo: phone "Show pattern" + the
-laptop tile's "Screen" calibrates the laptop camera; "Show pattern on this
-screen" + the phone's "Calibrate from screen" calibrates the phone camera;
+pattern: 1023 px vs true 1024. In the calibration panel: "Show pattern for
+another camera" on one device + "Screen pattern" for a camera on the other;
 `/pattern.html` shows the pattern on any device. While collecting,
 `calibrateFromPattern` reports each frame's state — `not-seen`, `too-flat`,
 `same-view` or `accepted` — with advice (`PATTERN_ADVICE`), and by default

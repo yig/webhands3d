@@ -1,131 +1,146 @@
-# webhands
+# webhands3d
 
-3D hand tracking in the browser with no special hardware.
+3D hand tracking in the browser with no special hardware: 21 joints per hand, in
+metres. All inputs produce the same output:
 
-Currently: a **monocular** backend. MediaPipe Hand Landmarker gives each hand's
-metric shape and 2D landmarks, and a perspective-n-point solve places it in the
-camera frame (metres). See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the
-design, the alternatives considered, and the roadmap (stereo, WebXR).
+- **one webcam**: MediaPipe, plus a calibrated hand skeleton for distance;
+- **several cameras**: this computer's cameras and **phones** that join by
+  scanning a QR code; joints are triangulated from every camera that sees them;
+- **WebXR headsets** with hand tracking (e.g. Meta Quest).
 
-## Demo
+It includes guided, drop-in **calibration UI**. You calibrate each camera's lens
+with a pattern shown on another screen, or with a credit card or sheet of paper.
+You calibrate hand size with a credit card, and camera positions by moving one
+hand around.
+
+**Live demo:** https://ygingold.github.io/webhands3d/ (one camera ·
+[several cameras](https://ygingold.github.io/webhands3d/cameras.html) ·
+[WebXR](https://ygingold.github.io/webhands3d/xr.html))
+
+## Install
 
 ```sh
-npm install
-npm run dev
+npm install @ygingold/webhands3d
 ```
 
-Open the printed URL in Chrome and click **Start camera**. For accurate depth,
-calibrate using objects you probably have (no ruler needed):
+The ES module includes TypeScript types. MediaPipe's model and WebAssembly files
+load from a CDN by default (`wasmPath` / `modelAssetPath` to self-host). Phones
+connect through [PeerJS](https://peerjs.com).
 
-1. **Hand size**: pick an object (credit card, AA battery, …), hold it by its
-   two ends between thumb tip and index fingertip, click **Calibrate hand size**.
-   Or enter your measured hand length.
-2. **Focal length**: easiest and most accurate, open `/pattern.html` on a phone
-   or tablet and hold its screen up to the camera, tilting it, after clicking
-   **Start**. Or hold a credit card or a sheet of paper (flat, on a book) tilted
-   30–60°, click **Freeze & click corners** and click near its 4 corners; they
-   snap to the edges. Or hold your hand at a measured distance.
-3. **Hand skeleton** (bone lengths and palm shape; fixes distance drifting with
-   pose and tilted hands being pushed back): show both hands and slowly turn
-   them in every direction for 8 s.
-
-Calibration is saved per camera in `localStorage`.
-
-Several cameras: open `/cameras.html`, add this computer's cameras, and/or join
-phones by scanning the QR code (phones need HTTPS: run `npm run dev:lan` and open
-the printed `https://` network address; accept the self-signed certificate once).
-Then set each camera's field of view, calibrate the hand size, and calibrate the
-camera positions by moving one hand through the shared view for 12 s. That also
-measures your hand's bone lengths for every camera. Turn off Center Stage.
-
-## Library
+## One camera
 
 ```ts
-import { MonocularHandTracker } from '@ygingold/webhands3d';
+import { MonocularHandTracker, createCalibrationPanel } from '@ygingold/webhands3d';
 
-const tracker = new MonocularHandTracker();   // opens the default camera
+const tracker = new MonocularHandTracker();          // opens the default camera
 tracker.onFrame((hands) => {
   for (const hand of hands) {
-    // hand.joints: Float32Array of 21 × (x, y, z) metres,
-    // camera frame: +x right, +y down, +z away from the camera
+    // hand.handedness: 'Left' | 'Right'
+    // hand.joints: Float32Array of 21 × (x, y, z) metres in MediaPipe's joint order,
+    //   camera frame: +x right, +y down, +z away from the camera
   }
 });
 await tracker.start();
-```
 
-### Calibration
-
-The quickest way: a ready-made, guided calibration UI for any tracker (it is
-what the demos use):
-
-```ts
-import { createCalibrationPanel } from '@ygingold/webhands3d';
-
+// Guided calibration UI (lens, hand size, bone lengths) with a status banner:
 createCalibrationPanel(document.querySelector('#calibration'), { tracker });
 ```
 
-It shows each step's status, live feedback over the video, and a status banner;
-it renders in a shadow root and can be themed with `--wh-*` CSS variables.
-
-Or drive the steps yourself. Calibration is part of the library. Each step collects frames, applies the
-result to the tracker and saves it per camera; steps reject with a
-`CalibrationError` whose `code` explains what to fix.
+## Several cameras, including phones
 
 ```ts
-import { pickCorners } from '@ygingold/webhands3d';
+import {
+  MonocularHandTracker, MultiViewHandTracker,
+  createCalibrationPanel, createRemoteCameraJoin,
+} from '@ygingold/webhands3d';
 
-const cal = tracker.calibrator;
-
-// 1. Hand size: hold a credit card by its long edge between thumb and index tips.
-await cal.handSizeFromObject('card-long');
-
-// 2. Focal length: hold a sheet of A4 tilted ~45°, click its corners; repeat a few times.
-cal.addRectangleView(await pickCorners(video, { mirrored: true }), 'a4');
-
-// 3. Skeleton: turn both hands in every direction for 8 s.
-await cal.skeleton({ onProgress: ({ elapsedMs, frames }) => console.log(elapsedMs, frames) });
-
-console.log(cal.status.missing); // [] when fully calibrated
-```
-
-Objects: `KNOWN_LENGTHS` (card edges, AA/AAA batteries) and `KNOWN_RECTANGLES`
-(A4, US Letter, card, US/€5 banknotes), or pass your own sizes.
-
-### Several cameras
-
-```ts
-import { MonocularHandTracker, MultiViewHandTracker, RemoteCamera, acceptRemotes, httpSignaling } from '@ygingold/webhands3d';
-
-const tracker = new MultiViewHandTracker([
-  new MonocularHandTracker({ deviceId: laptopCamId }),   // camera 0: the reference frame
-  new MonocularHandTracker({ deviceId: secondCamId }),
-]);
+const tracker = new MultiViewHandTracker([new MonocularHandTracker()]); // camera 0 = reference frame
 tracker.onFrame((hands) => { /* joints in camera 0's frame; hand.debug.views = cameras used */ });
 await tracker.start();
 
-// Phones join over WebRTC (they run RemoteCameraSender; see demo/remote.ts).
-acceptRemotes(httpSignaling(location.origin, room), (link) => tracker.addSource(new RemoteCamera(link)));
+// QR code + link for phones; each phone that connects becomes a camera.
+createRemoteCameraJoin(document.querySelector('#join'), {
+  tracker,
+  phonePageUrl: 'https://example.com/phone.html',  // your HTTPS page running mountRemoteCamera
+});
 
-await tracker.calibrate({ onProgress }); // move one hand around, 12 s; also measures the skeleton
+// Lens per camera, hand size, camera positions (move one hand through the shared view for 12 s):
+createCalibrationPanel(document.querySelector('#calibration'), { tracker });
 ```
 
-### WebXR (Meta Quest and other headsets)
+The phone page is one call:
+
+```ts
+import { mountRemoteCamera } from '@ygingold/webhands3d';
+mountRemoteCamera(document.querySelector('#remote'));   // reads ?host=… from the QR link
+```
+
+Phones need the page over **HTTPS** to use their camera, and both devices need
+internet access. PeerJS's free public server only helps the two browsers find
+each other; hand data then flows directly between them. That server sees the
+peer ids and connection-setup messages, including the devices' network
+addresses, but no hand data. To use your own
+[PeerServer](https://github.com/peers/peerjs-server), pass `peerOptions`. Pass
+`config.iceServers` there for your own STUN/TURN.
+
+## WebXR (Meta Quest and other headsets)
 
 ```ts
 import { WebXRHandTracker } from '@ygingold/webhands3d';
 
-const tracker = new WebXRHandTracker();            // or { session } to share your renderer's XR session
+const tracker = new WebXRHandTracker();          // or { session } to share your renderer's XR session
 tracker.onFrame((hands) => { /* same Hand3D format: 21 joints, metres */ });
-button.onclick = () => tracker.start();            // needs a user gesture
+button.onclick = () => tracker.start();          // needs a user gesture
 ```
 
-Demo: `/xr.html` in the Quest Browser (over HTTPS, `npm run dev:lan`).
+## Calibration without the panel
 
-## Scripts
+Every step is also an API. Steps collect frames, apply the result and save it per
+camera. They reject with a `CalibrationError` whose `code` says what to fix:
 
-- `npm run dev`: demo dev server
-- `npm run dev:lan`: demo over HTTPS on the local network (for phones)
-- `npm run smoke [-- <url>]`: headless browser check of the demo pages (needs Chrome and a running dev server)
-- `npm run replay -- <recording.json>`: re-run calibration on a debug recording from the cameras demo, with diagnostics
-- `npm test`: unit tests
-- `npm run build`: library to `dist/`
+```ts
+import { calibrateFromPattern, pickRectangle } from '@ygingold/webhands3d';
+
+const cal = tracker.calibrator;
+await calibrateFromPattern(video, cal, () => tracker.intrinsics);   // pattern shown on another screen
+cal.addRectangleView((await pickRectangle(video)).corners, 'card'); // or a credit card / A4 / Letter
+await cal.handSizeFromObject('card-long');                          // card held between thumb and index
+await cal.skeleton();                                               // one camera: bone lengths (8 s)
+console.log(cal.status.missing);                                    // [] when fully calibrated
+```
+
+How it works, the design decisions, and the measured accuracy are in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Development
+
+```sh
+npm install
+npm run dev        # demo pages at http://localhost:5173 (one camera, cameras, xr)
+npm run dev:lan    # the same over HTTPS on your local network, for phones (accept the certificate once)
+```
+
+- `npm test`: unit tests. `npm run typecheck`: TypeScript.
+- `npm run build`: the library, to `dist/`. `npm run build:demo`: the demo as a static site, to `dist-demo/`.
+- `npm run smoke [-- <url>]`: headless Chrome check of the demo pages. Needs Chrome, a running dev server and internet (PeerJS).
+- `npm run replay -- <recording.json>`: re-run calibration and tracking on a debug recording from the cameras demo.
+
+Turn off Center Stage (macOS Video Effects) on cameras you track with: it crops
+and zooms, which changes the camera's geometry.
+
+## Releasing
+
+1. **GitHub**: create the empty repository `ygingold/webhands3d`, then
+   `git remote add origin git@github.com:ygingold/webhands3d.git` and
+   `git push -u origin main`.
+2. **Demo**: in the repository's Settings → Pages, set Source to "GitHub
+   Actions". The `Demo on GitHub Pages` workflow then publishes the demo on
+   every push to `main`.
+3. **npm**: `npm login`, then `npm publish`. `prepublishOnly` runs the tests and
+   the build; `publishConfig` makes the scoped package public. For later
+   releases: `npm version patch|minor|major`, `git push --follow-tags`,
+   `npm publish`.
+
+## License
+
+[CC0 1.0](LICENSE): public domain dedication. CC0 does not grant patent rights.

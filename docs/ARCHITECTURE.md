@@ -16,7 +16,7 @@ in metres, in a known coordinate frame, at camera frame rate.
 | **RGBD webcam via getUserMedia** | Not practical. The Media Capture Depth Stream Extensions (RealSense etc.) were abandoned; Safari does not expose iPhone TrueDepth/LiDAR to the web. A native helper streaming depth over WebSocket would work but breaks "no special setup". |
 | **Monocular: MediaPipe + PnP** | **Implemented (phase 1).** MediaPipe Hand Landmarker already returns metric `worldLandmarks` (hand shape, origin at the hand's centre) alongside 2D image landmarks. Solving perspective-n-point with known intrinsics places the hand in the camera frame. Needs a calibration of hand size and focal length. Weakest along the viewing axis. |
 | **Stereo, one tab** | **Implemented (phase 2).** Chrome opens two cameras at once (verified headless with fake devices); macOS Continuity Camera exposes an iPhone as an ordinary webcam. Two monocular trackers, frames paired by capture time, joints triangulated. Self-calibrated from hand keypoints (essential matrix; hand size / skeleton fixes scale; time offset estimated). See *Stereo pipeline*. |
-| **Remote cameras over WebRTC, N cameras** | **Implemented (phase 3).** Each phone/tab runs MediaPipe and sends 2D + world landmarks, intrinsics and capture times over a WebRTC data channel (~2 KB/frame); joins by QR code; signaling through a mailbox on the dev server; ping/pong clock sync. Generalised to any number of local and remote cameras (`MultiViewHandTracker`). See *Multi-view pipeline* and *Remote cameras*. |
+| **Remote cameras over WebRTC, N cameras** | **Implemented (phase 3).** Each phone/tab runs MediaPipe and sends 2D + world landmarks, intrinsics and capture times over a WebRTC data channel (~2 KB/frame); joins by QR code; connection setup through PeerJS's public server; ping/pong clock sync. Generalised to any number of local and remote cameras (`MultiViewHandTracker`). See *Multi-view pipeline* and *Remote cameras*. |
 | Monocular depth nets, hand-mesh nets (HaMeR, WiLoR) | Too heavy / not metric enough for real-time browser use right now. Possible later as priors. |
 
 ## Module map
@@ -51,14 +51,17 @@ src/
   stereo/epipolar.ts       8-point + RANSAC essential matrix, decomposition, LM refinement, triangulation
   stereo/pairing.ts        group samples into frames; interpolate a view's landmarks to a time
   stereo/calibrate.ts      calibrateStereo: time offset + relative pose + metric scale from hand frames
-  remote/link.ts           Link: message pipe (WebRTC data channel, in-memory pair for tests)
+  remote/link.ts           Link: message pipe (PeerJS data connection; in-memory pair for tests)
   remote/protocol.ts       remote ↔ host messages (hello, intrinsics, frame, ping/pong, calibration)
   remote/clock.ts          ClockSync: NTP-style offset from the lowest-delay round trip
   remote/camera.ts         RemoteCamera (host side, a ViewSource) and RemoteCameraSender (phone side)
-  remote/signaling.ts      Signaling interface + httpSignaling client (mailbox protocol)
-  remote/webrtc.ts         connectToHost / acceptRemotes: WebRTC setup over Signaling, non-trickle ICE
+  remote/peer.ts           PeerJS: hostRemoteCameras (computer), connectToHost (phone), peerLink
+  ui/remote.ts             createRemoteCameraJoin (QR, link, adds phones) and mountRemoteCamera (phone page)
+  ui/style.ts              shared CSS and DOM helper for the UI components (shadow roots)
   debug/recorder.ts        Recorder: per-camera landmarks, timing and calibration as JSON (replay offline)
-tools/signaling.ts         Vite plugin serving the signaling mailbox (+ LAN address discovery)
+tools/smoke.mjs            headless Chrome check of the demo pages (npm run smoke)
+.github/workflows/         CI (typecheck, tests, build) and the GitHub Pages demo deployment
+vite.config.ts             demo dev server (+ dev-only LAN address for the QR code), library and demo builds
 demo/                      Vite dev pages (all calibration UI is the library panel): xr.html (WebXR hands, three.js), index.html (one camera), cameras.html (any number of
                            local + phone cameras, QR join), remote.html (phone side);
                            shared.ts (three.js scene, 2D overlay), style.css
@@ -499,22 +502,56 @@ A phone (or another tab/computer) joins as a camera:
   hand size / skeleton stored on the host under `remote:<id>`. Closes after 5 s
   of silence. The pair time-offset search still runs on top of clock sync and
   absorbs the remaining pipeline latency difference.
-- **Connection**: `connectToHost` (phone, offerer) / `acceptRemotes` (host).
-  Non-trickle ICE, so signaling is one offer and one answer through a
-  `Signaling` mailbox. `httpSignaling` speaks a tiny HTTP long-poll protocol
-  served by `tools/signaling.ts` (a Vite plugin; any server implementing it
-  works). No ICE servers by default: works on one local network; pass
-  `iceServers` (STUN/TURN) otherwise.
-- **Joining**: the host page shows a QR code for
-  `https://<LAN address>/remote.html?room=<room>` (room id remembered per host
-  browser). Phones need HTTPS for camera access: `npm run dev:lan` serves the
-  demo over HTTPS with a self-signed certificate on all interfaces (phones show
-  a certificate warning to accept once).
-- Verified headless (`npm run smoke`, Chrome with fake cameras, no hands):
-  pages load without errors; local cameras are added and removed (and offered
-  again); a phone page connects over WebRTC, streams at camera rate, and
-  appears / disappears on the host; removing the reference camera keeps the
-  phone running.
+- **Connection (signaling) — PeerJS.** Two browsers can't open a WebRTC
+  connection until they've exchanged a short setup message each way (offer and
+  answer: what to open, and the network addresses to try); WebRTC leaves *how*
+  to the application. We use [PeerJS](https://peerjs.com): the computer
+  registers with a PeerServer under an id (`hostRemoteCameras`; by default
+  PeerJS's free public cloud server, remembered per browser as
+  `webhands3d-<random>`, a random id if it's taken), the QR code carries it,
+  and the phone connects to it (`connectToHost`). The resulting PeerJS data
+  connection (raw serialization, reliable) becomes the `Link` (`peerLink`), so
+  everything above — protocol, clock sync, tracking, calibration — is
+  unchanged. Hand data flows directly between the devices; the PeerServer sees
+  the peer ids and setup messages (which include network addresses), not hand
+  data. PeerJS's defaults include public STUN, so devices on different
+  networks can connect in most cases. Use your own PeerServer / STUN / TURN via
+  `peerOptions`. The host reconnects to the PeerServer if that connection drops
+  (open phone links are unaffected). Errors are explained: "No computer with
+  that code…", "Couldn't reach the PeerJS server…". *History:* an earlier
+  version used a custom HTTP long-poll mailbox served by the dev server; it was
+  replaced by PeerJS so that published apps and the static demo need no server.
+- **UI components**: `createRemoteCameraJoin(container, { tracker, phonePageUrl })`
+  on the computer registers with PeerJS, shows the QR code / link / code and the
+  connected phones, and adds each phone to the tracker as a `RemoteCamera`
+  (removed when it leaves; hooks `addCamera` / `removeCamera`).
+  `mountRemoteCamera(container)` is the whole phone page: camera choice
+  (preferring the main back camera, not lens-switching "dual/ultra-wide"
+  virtual cameras), the computer's code (from `?host=`), connect, connection
+  status, the camera view with detected hands, and the lens calibration step
+  (the calibration panel). Both render in shadow roots.
+- **Joining**: the QR code points to the app's phone page with `?host=<id>`.
+  Phones need HTTPS for camera access: the GitHub Pages demo is HTTPS; locally,
+  `npm run dev:lan` serves over HTTPS with a self-signed certificate (accept
+  once), and the dev server reports its LAN address so the QR code works when
+  the computer opened the page on localhost.
+- Verified headless (`npm run smoke`, Chrome with fake cameras, no hands,
+  real PeerJS cloud): pages load without errors; local cameras are added and
+  removed (and offered again); the computer registers with PeerJS; a phone page
+  connects, streams at camera rate, and appears / disappears on the host;
+  removing the reference camera keeps the phone running. The static demo build
+  was also checked served from a sub-path (as on GitHub Pages).
+
+## Packaging and publishing
+
+Published as **`@ygingold/webhands3d`** (npm, public scoped package; source at
+github.com/ygingold/webhands3d; CC0-1.0). One ES module (`dist/webhands.js`)
+plus TypeScript declarations; runtime dependencies `@mediapipe/tasks-vision`,
+`peerjs`, `qrcode` (three.js is demo-only). `prepublishOnly` runs tests and the
+build. The demo pages build to a static site (`npm run build:demo`, relative
+paths) that GitHub Actions deploys to GitHub Pages on every push to `main`;
+because phones connect through PeerJS, the hosted demo needs no server. CI runs
+typecheck, tests and the build on every push.
 
 **Simulation** (`test/stereoSim.ts`, `test/multiview.test.ts`: 1280×720 60°,
 1920×1080 70° and 1280×720 65° cameras, 30–35 cm either side of camera 0 and

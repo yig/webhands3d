@@ -57,7 +57,9 @@
     "typecheck": "tsc --noEmit",
     "smoke": "node tools/smoke.mjs",
     "replay": "f() { WEBHANDS_RECORDING=\"$1\" vitest run test/replay.test.ts --silent=false --reporter=dot; }; f",
-    "prepublishOnly": "npm test && npm run build"
+    "prepublishOnly": "npm test && npm run build",
+    "build:demo": "vite build --mode demo",
+    "preview:demo": "vite preview --outDir dist-demo"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^1.1.0",

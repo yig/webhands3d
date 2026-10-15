@@ -28,8 +28,23 @@ function lanInfo(): Plugin {
   };
 }
 
-export default defineConfig(({ command }) =>
-  command === 'serve'
+const demoPages = ['index', 'cameras', 'remote', 'xr', 'pattern'];
+
+export default defineConfig(({ command, mode }) =>
+  // `npm run build:demo`: the demo pages as a static site (e.g. GitHub Pages), relative paths.
+  mode === 'demo'
+    ? {
+        root: 'demo',
+        base: './',
+        build: {
+          outDir: '../dist-demo',
+          emptyOutDir: true,
+          rollupOptions: {
+            input: Object.fromEntries(demoPages.map((p) => [p, fileURLToPath(new URL(`demo/${p}.html`, import.meta.url))])),
+          },
+        },
+      }
+    : command === 'serve'
     ? {
         root: 'demo',
         plugins: [lanInfo(), ...(lan ? [basicSsl()] : [])],

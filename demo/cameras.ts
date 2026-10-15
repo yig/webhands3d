@@ -222,7 +222,8 @@ addLocal.addEventListener('click', () =>
 (async () => {
   // Phones need this page's address on the local network (over HTTPS for their camera).
   let base = new URL('.', location.href).href;
-  if (['localhost', '127.0.0.1'].includes(location.hostname)) {
+  // (The dev server reports its LAN address; a static build is used through its real address.)
+  if (import.meta.env.DEV && ['localhost', '127.0.0.1'].includes(location.hostname)) {
     try {
       const info = (await (await fetch('/webhands-info')).json()) as { urls: string[] };
       if (info.urls[0]) base = `${info.urls[0]}/`;

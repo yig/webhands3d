@@ -140,3 +140,4 @@ export {
   type PatternViewState,
   type ShowPatternOptions,
 } from './ui/pattern';
+export { WebXRHandTracker, WEBXR_JOINTS, handsFromFrame, type WebXROptions } from './backends/webxr';

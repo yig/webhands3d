@@ -97,6 +97,18 @@ acceptRemotes(httpSignaling(location.origin, room), (link) => tracker.addSource(
 await tracker.calibrate({ onProgress }); // move one hand around, 12 s; also measures the skeleton
 ```
 
+### WebXR (Meta Quest and other headsets)
+
+```ts
+import { WebXRHandTracker } from 'webhands';
+
+const tracker = new WebXRHandTracker();            // or { session } to share your renderer's XR session
+tracker.onFrame((hands) => { /* same Hand3D format: 21 joints, metres */ });
+button.onclick = () => tracker.start();            // needs a user gesture
+```
+
+Demo: `/xr.html` in the Quest Browser (over HTTPS, `npm run dev:lan`).
+
 ## Scripts
 
 - `npm run dev`: demo dev server

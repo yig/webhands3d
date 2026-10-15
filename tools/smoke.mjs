@@ -103,6 +103,12 @@ await phone.close();
 await host.waitForTimeout(7000);
 check((await tiles(host)).length === 0, 'phone tile disappears when the phone leaves');
 
+// WebXR page: without a headset it says so instead of failing.
+const xr = await page('/xr.html', 'xr');
+await xr.waitForTimeout(1500);
+check(/no immersive WebXR|Quest/.test(await text(xr, '#status')) || (await xr.isEnabled('#enter')), 'WebXR page loads and explains when there is no headset');
+await xr.close();
+
 // ---------- Calibration UI with synthetic video (no camera needed) ----------
 const lib = await page('/pattern.html', 'calibration');
 const srcUrl = `/@fs${process.cwd().replace(/ /g, '%20')}/src/index.ts`;

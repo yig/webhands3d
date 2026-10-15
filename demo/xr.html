@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="data:," />
+    <title>webhands WebXR</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div id="status" role="status" aria-live="polite"></div>
+    <main>
+      <div class="view" id="scene"></div>
+      <aside>
+        <nav><a href="./index.html">One camera</a> · <a href="./cameras.html">Several cameras</a> · WebXR</nav>
+        <h1>webhands · WebXR hands</h1>
+        <p class="hint">For headsets with hand tracking, e.g. Meta Quest: open this page in the Quest Browser
+          (needs HTTPS: <code>npm run dev:lan</code>), put the controllers down, and press Enter XR. Your hands are
+          shown as joints with the passthrough view behind them. The library reports them in the same format as the
+          camera trackers.</p>
+        <button id="enter" class="primary">Enter XR</button>
+        <h2>Tracking</h2>
+        <div id="readout">–</div>
+      </aside>
+    </main>
+    <script type="module" src="./xr.ts"></script>
+  </body>
+</html>

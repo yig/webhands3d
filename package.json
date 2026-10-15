@@ -29,6 +29,7 @@
     "@types/node": "^26.6.5",
     "@types/qrcode": "^1.5.6",
     "@types/three": "^0.186.0",
+    "@types/webxr": "^0.5.24",
     "@vitejs/plugin-basic-ssl": "^2.3.0",
     "playwright-core": "^1.64.1",
     "qrcode": "^1.5.4",

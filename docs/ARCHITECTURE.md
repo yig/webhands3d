@@ -12,7 +12,7 @@ in metres, in a known coordinate frame, at camera frame rate.
 
 | Approach | Verdict |
 |---|---|
-| **WebXR Hand Input** | Excellent (25 joints, metric) but only exists on XR headsets (Quest, Vision Pro, Android XR). No desktop browser exposes webcam hands through WebXR. → Later, as an optional backend. |
+| **WebXR Hand Input** | **Implemented (phase 4)** as `WebXRHandTracker`: headsets with hand tracking (Quest, Vision Pro, Android XR) give 25 metric joints directly. Not available from webcams on desktop browsers. See *WebXR backend*. |
 | **RGBD webcam via getUserMedia** | Not practical. The Media Capture Depth Stream Extensions (RealSense etc.) were abandoned; Safari does not expose iPhone TrueDepth/LiDAR to the web. A native helper streaming depth over WebSocket would work but breaks "no special setup". |
 | **Monocular: MediaPipe + PnP** | **Implemented (phase 1).** MediaPipe Hand Landmarker already returns metric `worldLandmarks` (hand shape, origin at the hand's centre) alongside 2D image landmarks. Solving perspective-n-point with known intrinsics places the hand in the camera frame. Needs a calibration of hand size and focal length. Weakest along the viewing axis. |
 | **Stereo, one tab** | **Implemented (phase 2).** Chrome opens two cameras at once (verified headless with fake devices); macOS Continuity Camera exposes an iPhone as an ordinary webcam. Two monocular trackers, frames paired by capture time, joints triangulated. Self-calibrated from hand keypoints (essential matrix; hand size / skeleton fixes scale; time offset estimated). See *Stereo pipeline*. |
@@ -45,6 +45,7 @@ src/
   backends/assemble.ts     detections → Hand3D (placement + smoothing), shared by local and remote cameras
   backends/multiview.ts    MultiViewHandTracker: N ViewSources, triangulation, skeleton measurement
   backends/stereo.ts       StereoHandTracker = MultiViewHandTracker (two-camera alias)
+  backends/webxr.ts        WebXRHandTracker: headset hand tracking (25 WebXR joints → 21)
   geometry/linalg.ts       symmetric eigen (Jacobi), 3×3 SVD, small matrix helpers
   stereo/epipolar.ts       8-point + RANSAC essential matrix, decomposition, LM refinement, triangulation
   stereo/pairing.ts        group samples into frames; interpolate a view's landmarks to a time
@@ -57,7 +58,7 @@ src/
   remote/webrtc.ts         connectToHost / acceptRemotes: WebRTC setup over Signaling, non-trickle ICE
   debug/recorder.ts        Recorder: per-camera landmarks, timing and calibration as JSON (replay offline)
 tools/signaling.ts         Vite plugin serving the signaling mailbox (+ LAN address discovery)
-demo/                      Vite dev pages: index.html (one camera), cameras.html (any number of
+demo/                      Vite dev pages: xr.html (WebXR hands, three.js), index.html (one camera), cameras.html (any number of
                            local + phone cameras, QR join), remote.html (phone side);
                            shared.ts (three.js scene, 2D overlay), style.css
                            (calibration uses only the public Calibrator / pickCorners API)
@@ -524,6 +525,36 @@ cameras — it crops/zooms continuously, changing the intrinsics. Each camera's
 focal length matters (use the paper step per camera, or enter FOVs); errors
 there bias depth. Two `getUserMedia` calls are made sequentially.
 
+## WebXR backend
+
+`WebXRHandTracker` (`src/backends/webxr.ts`) is a `HandTrackerBackend` for
+headsets whose browser exposes the WebXR Hand Input API (Meta Quest Browser;
+also Vision Pro, Android XR). It needs no calibration: the headset measures
+the hands itself.
+
+- **Joints**: WebXR has 25 per hand; ours are the 21 in MediaPipe order. Each
+  finger's metacarpal joint (near the wrist) has no MediaPipe equivalent and is
+  dropped; MediaPipe's MCP is WebXR's `*-phalanx-proximal`, PIP
+  `*-phalanx-intermediate`, DIP `*-phalanx-distal`; the thumb's CMC / MCP / IP
+  are `thumb-metacarpal` / `thumb-phalanx-proximal` / `thumb-phalanx-distal`
+  (`WEBXR_JOINTS`).
+- **Frame**: metres in the session's reference space (default `local`: where
+  the headset was at the start), converted to the library's camera-style axes
+  (+x right, +y down, +z forward) = WebXR (x, −y, −z). So code written for the
+  camera backends works unchanged, with the headset's start pose as "camera".
+- **Session**: either the app's (e.g. three.js `renderer.xr.getSession()`,
+  requested with the `hand-tracking` feature; the tracker adds its own
+  `requestAnimationFrame` callback), or one the tracker requests on `start()`
+  (from a user gesture; AR passthrough if supported, else VR) with a WebGL
+  layer it clears to transparent — sessions only produce frames once they have
+  a layer. A hand is reported only when all its joints are tracked.
+  `handsFromFrame(frame, space, time)` reads hands for apps with their own loop.
+- **Smoothing** off by default (the headset already filters).
+- **Testing**: unit-tested with mock XR frames (joint mapping, axes,
+  handedness, lost tracking); the demo (`xr.html`, three.js, `npm run dev:lan`
+  for HTTPS) loads cleanly without a headset and says why. **Not yet tried on a
+  real headset.**
+
 ## Debug recordings
 
 `Recorder` (`src/debug/recorder.ts`) subscribes to every camera of a
@@ -605,4 +636,4 @@ look fine. Recalibrating the cameras fixes it.
 2b. ✅ Skeleton measured by triangulation (at calibration and continuously),
    given to every camera for single-view fallback.
 3. ✅ Remote cameras over WebRTC, generalised to N cameras (local and remote).
-4. WebXR backend.
+4. ✅ WebXR backend (untested on a headset so far).
